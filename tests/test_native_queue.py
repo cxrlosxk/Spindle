@@ -124,3 +124,69 @@ def test_windows_uia_bridge_initializes_without_apple_music():
     with UIAutomationInitializerInThread():
         backend = WindowsQueueUIA()
         assert backend.api is not None
+
+
+def _fake_queue_adapter(*, initial_open: bool, empty: bool, populated: bool = False):
+    """Model Apple's accessible tree without depending on native Windows UIA."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(ButtonControl='button', TextControl='text')
+    state = {'open': initial_open, 'clicks': 0}
+    toggle = object()
+    panel = object()
+    row = object()
+    adapter._find = lambda window, **criteria: (
+        toggle if criteria.get('aid') == 'PlayQueueToggleButton' else None
+    )
+    adapter._queue_toggle_is_on = lambda button: state['open']
+    adapter._press_queue_toggle = lambda button: state.update(
+        open=not state['open'], clicks=state['clicks'] + 1
+    )
+    adapter._playing_next = lambda window: panel if state['open'] and populated else None
+    adapter._empty_queue_visible = lambda window: bool(state['open'] and empty)
+    adapter._rows = lambda lst: [row]
+    adapter._row_texts = lambda item: ['needy', 'Ariana Grande']
+    return adapter, state
+
+
+def test_empty_playing_next_already_open_is_not_toggled_closed():
+    """Regression for recorded 2026-11-20 failure: list missing, pane open."""
+    adapter, state = _fake_queue_adapter(initial_open=True, empty=True)
+    assert adapter._queue_snapshot(object()) == []
+    assert state == {'open': True, 'clicks': 0}
+
+
+def test_empty_playing_next_closed_is_read_then_restored():
+    adapter, state = _fake_queue_adapter(initial_open=False, empty=True)
+    assert adapter._queue_snapshot(object()) == []
+    assert state == {'open': False, 'clicks': 2}
+
+
+def test_populated_playing_next_reads_rows_without_toggling():
+    adapter, state = _fake_queue_adapter(initial_open=True, empty=False, populated=True)
+    assert adapter._queue_snapshot(object()) == [('needy', 'Ariana Grande')]
+    assert state['clicks'] == 0
+
+
+def test_unreadable_empty_queue_is_not_falsely_verified(monkeypatch):
+    from spindle.native_queue import NativeQueueError
+    adapter, state = _fake_queue_adapter(initial_open=True, empty=False)
+    # Make the visibility timeout deterministic without a 4-second delay.
+    adapter._wait = lambda *args, **kwargs: None
+    with pytest.raises(NativeQueueError, match='did not expose'):
+        adapter._queue_snapshot(object())
+    assert state['clicks'] == 0
+
+
+def test_native_empty_label_is_respected_when_present():
+    """The 'No upcoming songs.' accessibility label should count as empty."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(TextControl='text')
+    label = SimpleNamespace(CurrentIsOffscreen=False)
+    adapter._find = lambda window, **kw: label if kw.get('name') == 'No upcoming songs.' else None
+    assert adapter._empty_queue_visible(object()) is True
+    label.CurrentIsOffscreen = True
+    assert adapter._empty_queue_visible(object()) is False
