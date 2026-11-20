@@ -186,17 +186,32 @@ class SettingsDialog(QDialog):
         )
         self.native_queue_enabled.setChecked(settings.native_queue_enabled)
         outer.addWidget(self.native_queue_enabled)
-        self.allow_focus_handoff = QCheckBox(
-            'If background search is blocked, briefly focus Apple Music to submit it'
+        self.protect_foreground = QCheckBox(
+            'Keep games and other apps in focus (background-only queueing)'
         )
-        self.allow_focus_handoff.setChecked(settings.allow_focus_handoff)
+        self.protect_foreground.setChecked(settings.protect_foreground)
+        outer.addWidget(self.protect_foreground)
+        self.allow_focus_handoff = QCheckBox(
+            'Compatibility mode: briefly focus Apple Music if background search fails'
+        )
+        self.allow_focus_handoff.setChecked(
+            settings.allow_focus_handoff and not settings.protect_foreground
+        )
         outer.addWidget(self.allow_focus_handoff)
+        self.protect_foreground.toggled.connect(
+            lambda enabled: self.allow_focus_handoff.setChecked(False)
+            if enabled else None
+        )
+        self.allow_focus_handoff.toggled.connect(
+            lambda enabled: self.protect_foreground.setChecked(False)
+            if enabled else None
+        )
         caution = label(
-            'Spindle automatically processes pending requests in order and retries '
-            'transient failures. Songs are marked as added only after Apple Music '
-            'confirms them. This uses experimental Windows UI automation and may '
-            'briefly restore Apple Music when it was minimized. The optional '
-            'focus handoff can momentarily interrupt a full-screen game.',
+            'Background-only mode never deliberately activates Apple Music or '
+            'sends global keystrokes. Spindle still tries native controls, '
+            'but songs remain pending and retry if Apple Music requires focus. '
+            'Compatibility mode may briefly interrupt your game. Automatic '
+            'requests never need individual approval.',
             'muted', True,
         )
         outer.addWidget(caution)
@@ -217,7 +232,11 @@ class SettingsDialog(QDialog):
         self.settings.max_duration_minutes = self.duration.value()
         self.settings.requests_enabled = self.enabled.isChecked()
         self.settings.native_queue_enabled = self.native_queue_enabled.isChecked()
-        self.settings.allow_focus_handoff = self.allow_focus_handoff.isChecked()
+        self.settings.protect_foreground = self.protect_foreground.isChecked()
+        self.settings.allow_focus_handoff = (
+            self.allow_focus_handoff.isChecked()
+            and not self.settings.protect_foreground
+        )
         self.settings.save()
         super().accept()
 
@@ -232,7 +251,10 @@ class SpindleWindow(QMainWindow):
         self.settings = Settings.load()
         self.store = QueueStore(data_dir() / 'requests.db')
         self.native_queue = NativeQueueBridge()
-        self.native_queue.allow_focus_handoff = self.settings.allow_focus_handoff
+        self.native_queue.allow_focus_handoff = (
+            self.settings.allow_focus_handoff
+            and not self.settings.protect_foreground
+        )
         self.syncing_ids: set[int] = set()
         self.sync_lock = threading.Lock()
         self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
@@ -586,7 +608,10 @@ class SpindleWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
-            self.native_queue.allow_focus_handoff = self.settings.allow_focus_handoff
+            self.native_queue.allow_focus_handoff = (
+            self.settings.allow_focus_handoff
+            and not self.settings.protect_foreground
+        )
             self.auto_queue.wake()
             self.log(
                 'Automatic Apple Music requests '
