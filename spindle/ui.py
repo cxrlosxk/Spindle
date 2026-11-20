@@ -1,0 +1,463 @@
+"""Spindle's native-feeling Qt desktop interface.
+
+All Windows/Twitch I/O runs outside Qt's UI thread. The app has an intentional
+manual handoff: requests in Spindle are NOT added to Apple Music Up Next.
+"""
+from __future__ import annotations
+
+import asyncio
+import math
+import sys
+import threading
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QObject, QTimer, Signal, QSize
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication, QCheckBox, QDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect,
+    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+    QScrollArea, QSpinBox, QVBoxLayout, QWidget, QSizePolicy,
+)
+from PySide6.QtCore import QUrl
+
+from .apple_media import AppleMusicMonitor
+from .catalog import Catalog
+from .commands import CommandEngine
+from .queue_store import QueueStore
+from .settings import Settings, data_dir
+from .twitch import TwitchClient
+
+BG = '#0d1014'
+SURFACE = '#171b21'
+SURFACE_RAISED = '#1c2229'
+BORDER = '#303740'
+TEXT = '#f3f0ea'
+MUTED = '#969da6'
+ACCENT = '#e0ae8d'
+GREEN = '#a6ccb7'
+
+CSS = f'''
+* {{ font-family: 'Segoe UI', 'Inter', sans-serif; color: {TEXT}; font-size: 13px; }}
+QMainWindow, QWidget#root {{ background: {BG}; }}
+QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 18px; }}
+QFrame#raised {{ background: {SURFACE_RAISED}; border: 1px solid #30373f; border-radius: 13px; }}
+QFrame#rowCard {{ background: #1c2229; border: 1px solid #30363f; border-radius: 12px; }}
+QFrame#rowCard:hover {{ border-color: #665246; }}
+QLabel#muted {{ color: {MUTED}; }}
+QLabel#eyebrow {{ color: {ACCENT}; font-size: 10px; font-weight: 700; letter-spacing: 2px; }}
+QLabel#title {{ font-size: 31px; font-weight: 650; letter-spacing: -1px; }}
+QLabel#section {{ font-size: 19px; font-weight: 600; }}
+QLabel#songTitle {{ font-size: 27px; font-weight: 650; }}
+QLabel#itemTitle {{ font-weight: 600; font-size: 13px; }}
+QLabel#status {{ background: #24372f; color: #add4bc; border: 1px solid #395549; border-radius: 10px; padding: 5px 10px; font-size: 11px; }}
+QPushButton {{ background: #262c34; border: 1px solid #404752; border-radius: 10px; padding: 9px 15px; font-weight: 600; }}
+QPushButton:hover {{ background: #333a44; border-color: #696f77; }}
+QPushButton:disabled {{ color: #767d85; background: #22272d; }}
+QPushButton#primary {{ background: {ACCENT}; border: 1px solid {ACCENT}; color: #181517; }}
+QPushButton#primary:hover {{ background: #f0c0a1; }}
+QPushButton#ghost {{ background: transparent; border: 1px solid {BORDER}; color: #d6d3cc; padding: 7px 11px; }}
+QPushButton#ghost:hover {{ background: #29313a; }}
+QLineEdit, QSpinBox {{ background: #11151a; border: 1px solid #3a434b; border-radius: 10px; padding: 10px 12px; selection-background-color: #765441; }}
+QLineEdit:focus, QSpinBox:focus {{ border-color: {ACCENT}; }}
+QScrollArea {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ background: #171b21; width: 8px; border: none; border-radius: 4px; }}
+QScrollBar::handle:vertical {{ background: #414852; border-radius: 4px; min-height: 30px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QDialog {{ background: {BG}; }}
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{ width: 17px; height: 17px; }}
+'''
+
+
+def label(text: str, kind: str | None = None, wordwrap=False) -> QLabel:
+    w = QLabel(text)
+    if kind:
+        w.setObjectName(kind)
+    if wordwrap:
+        w.setWordWrap(True)
+    return w
+
+
+def layout_column(widget: QWidget, margin=20, spacing=12):
+    box = QVBoxLayout(widget)
+    box.setContentsMargins(margin, margin, margin, margin)
+    box.setSpacing(spacing)
+    return box
+
+
+def button(text: str, kind: str = 'ghost') -> QPushButton:
+    w = QPushButton(text)
+    w.setObjectName(kind)
+    w.setCursor(Qt.CursorShape.PointingHandCursor)
+    return w
+
+
+class RecordArt(QWidget):
+    """Vector vinyl rather than a static logo: understated tactile identity."""
+    def __init__(self):
+        super().__init__()
+        self.angle = 0
+        self.spinning = False
+        self.setMinimumSize(165, 165)
+        self.setMaximumSize(235, 235)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(80)
+
+    def tick(self):
+        if self.spinning and self.isVisible():
+            self.angle = (self.angle + 1.1) % 360
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        side = min(self.width(), self.height()) - 16
+        x, y = (self.width()-side)/2, (self.height()-side)/2
+        p.setPen(QPen(QColor('#3d424a'), 1.1))
+        p.setBrush(QColor('#080a0e'))
+        p.drawEllipse(int(x), int(y), int(side), int(side))
+        for fraction, opacity in [(0.92, 46), (.84,30),(.74,45),(.64,32),(.56,52),(.48,35)]:
+            p.setPen(QPen(QColor(180, 185, 193, opacity), 1))
+            d = side * fraction
+            p.drawEllipse(int(x + (side-d)/2), int(y + (side-d)/2), int(d), int(d))
+        # Cream paper label, with an offset terracotta band that subtly rotates.
+        center = side / 2
+        d = side*.39
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor('#d6c4aa'))
+        p.drawEllipse(int(x+center-d/2),int(y+center-d/2),int(d),int(d))
+        p.save()
+        p.translate(x+center, y+center)
+        p.rotate(self.angle)
+        p.setBrush(QColor('#a96952'))
+        p.drawPie(int(-d/2), int(-d/2), int(d), int(d), 45*16, 92*16)
+        p.restore()
+        p.setBrush(QColor('#181a1e'))
+        p.drawEllipse(int(x+center-5),int(y+center-5),10,10)
+        p.end()
+
+
+class Bus(QObject):
+    status = Signal(str)
+    track = Signal(object)
+    queue_changed = Signal()
+    chat = Signal(str)
+    device_code = Signal(str, str)
+    local_result = Signal(str)
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings: Settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle('Spindle · Preferences')
+        self.setMinimumWidth(450)
+        outer = layout_column(self, 26, 16)
+        outer.addWidget(label('Preferences', 'section'))
+        desc = label('Connect a Twitch application registered as a Public Client. Spindle never needs a client secret.', 'muted', True)
+        outer.addWidget(desc)
+        form = QFormLayout()
+        form.setSpacing(12)
+        self.client = QLineEdit(settings.twitch_client_id)
+        self.client.setPlaceholderText('Twitch application Client ID')
+        form.addRow('Twitch Client ID', self.client)
+        self.max_queue = QSpinBox(); self.max_queue.setRange(1, 200); self.max_queue.setValue(settings.max_queue)
+        form.addRow('Max pending songs', self.max_queue)
+        self.per_viewer = QSpinBox(); self.per_viewer.setRange(1, 15); self.per_viewer.setValue(settings.max_per_viewer)
+        form.addRow('Per viewer', self.per_viewer)
+        self.cooldown = QSpinBox(); self.cooldown.setRange(0, 3600); self.cooldown.setSuffix(' sec'); self.cooldown.setValue(settings.cooldown_seconds)
+        form.addRow('Request cooldown', self.cooldown)
+        self.duration = QSpinBox(); self.duration.setRange(1, 120); self.duration.setSuffix(' min'); self.duration.setValue(settings.max_duration_minutes)
+        form.addRow('Max song length', self.duration)
+        outer.addLayout(form)
+        self.enabled = QCheckBox('Allow song requests in chat')
+        self.enabled.setChecked(settings.requests_enabled)
+        outer.addWidget(self.enabled)
+        links = label('Register at dev.twitch.tv/console/apps. Use a Public client; Device Code authorization runs in your browser.', 'muted', True)
+        outer.addWidget(links)
+        actions = QHBoxLayout()
+        cancel = button('Cancel')
+        save = button('Save changes', 'primary')
+        actions.addStretch(1); actions.addWidget(cancel); actions.addWidget(save)
+        cancel.clicked.connect(self.reject); save.clicked.connect(self.accept)
+        outer.addLayout(actions)
+
+    def accept(self):
+        self.settings.twitch_client_id = self.client.text().strip()
+        self.settings.max_queue = self.max_queue.value()
+        self.settings.max_per_viewer = self.per_viewer.value()
+        self.settings.cooldown_seconds = self.cooldown.value()
+        self.settings.max_duration_minutes = self.duration.value()
+        self.settings.requests_enabled = self.enabled.isChecked()
+        self.settings.save()
+        super().accept()
+
+
+class SpindleWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Spindle — Apple Music for Twitch')
+        self.resize(1210, 810)
+        self.setMinimumSize(1010, 670)
+        self.bus = Bus()
+        self.settings = Settings.load()
+        self.store = QueueStore(data_dir() / 'requests.db')
+        self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit)
+        self.monitor = AppleMusicMonitor(self.on_media, self.bus.status.emit)
+        self.twitch: TwitchClient | None = None
+        self.activity = []
+        self.build_ui()
+        self.bus.status.connect(self.on_status)
+        self.bus.track.connect(self.update_track)
+        self.bus.queue_changed.connect(self.refresh_queue)
+        self.bus.chat.connect(self.log)
+        self.bus.local_result.connect(self.local_done)
+        self.bus.device_code.connect(self.show_code)
+        self.refresh_queue()
+        self.start_monitor()
+
+    def build_ui(self):
+        root = QWidget(); root.setObjectName('root'); self.setCentralWidget(root)
+        page = QVBoxLayout(root)
+        page.setContentsMargins(34, 28, 34, 28)
+        page.setSpacing(21)
+        header = QHBoxLayout(); header.setSpacing(14)
+        logo = label('◉'); logo.setStyleSheet(f'font-size: 34px; color: {ACCENT};')
+        header.addWidget(logo)
+        brand = QVBoxLayout(); brand.setSpacing(0)
+        title = label('Spindle', 'title'); title.setStyleSheet('font-size: 25px; font-weight: 700;')
+        brand.addWidget(title)
+        sub = label('APPLE MUSIC  /  TWITCH', 'eyebrow'); brand.addWidget(sub)
+        header.addLayout(brand)
+        header.addStretch(1)
+        self.twitch_status = label('TWITCH OFFLINE', 'status')
+        self.twitch_status.setStyleSheet('background: #2b2925; color: #d8b9a2; border: 1px solid #514138; border-radius: 10px; padding: 7px 10px; font-size: 11px;')
+        header.addWidget(self.twitch_status)
+        self.connect_button = button('Connect Twitch', 'primary'); self.connect_button.clicked.connect(self.connect_twitch)
+        header.addWidget(self.connect_button)
+        self.settings_button = button('⚙  Settings'); self.settings_button.clicked.connect(self.open_settings)
+        header.addWidget(self.settings_button)
+        page.addLayout(header)
+
+        top = QFrame(); top.setObjectName('card'); top_layout = QHBoxLayout(top)
+        top_layout.setContentsMargins(30, 25, 32, 25); top_layout.setSpacing(24)
+        self.record = RecordArt(); top_layout.addWidget(self.record)
+        info = QVBoxLayout(); info.setSpacing(8)
+        info.addWidget(label('NOW PLAYING  ·  APPLE MUSIC', 'eyebrow'))
+        self.song_title = label('Nothing playing', 'songTitle')
+        self.song_title.setWordWrap(True); info.addWidget(self.song_title)
+        self.song_artist = label('Open Apple Music to get started', 'muted'); self.song_artist.setStyleSheet('font-size: 16px; color: #bab5af;')
+        info.addWidget(self.song_artist)
+        self.song_album = label('Waiting for Windows media session', 'muted'); info.addWidget(self.song_album)
+        info.addStretch(1)
+        self.now_status = label('○  Checking for Apple Music', 'muted'); info.addWidget(self.now_status)
+        top_layout.addLayout(info, 1)
+        top_layout.addStretch(1)
+        description = QVBoxLayout(); description.setSpacing(8)
+        description.addWidget(label('A LITTLE CONTEXT', 'eyebrow'))
+        context = label('Spindle reads Apple Music playback through Windows. Requests wait here until you choose to play them.', 'muted', True)
+        context.setMaximumWidth(215)
+        description.addWidget(context)
+        description.addStretch(1)
+        top_layout.addLayout(description)
+        page.addWidget(top)
+
+        content = QHBoxLayout(); content.setSpacing(20)
+        left = QFrame(); left.setObjectName('card'); left.setMinimumWidth(490)
+        left_col = layout_column(left, 24, 13)
+        queue_title = QHBoxLayout(); queue_title.addWidget(label('Viewer requests', 'section')); queue_title.addStretch(1)
+        self.count = label('0 pending', 'muted'); queue_title.addWidget(self.count)
+        left_col.addLayout(queue_title)
+        self.disclaimer = label('Requests live in Spindle. They are not automatically added to Apple Music Up Next.', 'muted', True)
+        self.disclaimer.setStyleSheet('font-size: 12px; color: #b9a997;')
+        left_col.addWidget(self.disclaimer)
+        self.queue_scroll = QScrollArea(); self.queue_scroll.setWidgetResizable(True)
+        self.queue_body = QWidget(); self.queue_list = QVBoxLayout(self.queue_body)
+        self.queue_list.setContentsMargins(0, 2, 4, 0); self.queue_list.setSpacing(9)
+        self.queue_scroll.setWidget(self.queue_body)
+        left_col.addWidget(self.queue_scroll, 1)
+        content.addWidget(left, 5)
+
+        right = QVBoxLayout(); right.setSpacing(16)
+        request_card = QFrame(); request_card.setObjectName('card'); right_col = layout_column(request_card, 22, 12)
+        right_col.addWidget(label('Find a song', 'section'))
+        right_col.addWidget(label('Try a request locally, or let viewers use !sr in chat.', 'muted', True))
+        input_row = QHBoxLayout(); input_row.setSpacing(8)
+        self.query = QLineEdit(); self.query.setPlaceholderText('AMEN Beyoncé')
+        self.query.returnPressed.connect(self.add_local)
+        input_row.addWidget(self.query, 1)
+        self.add_button = button('Add', 'primary'); self.add_button.clicked.connect(self.add_local)
+        input_row.addWidget(self.add_button)
+        right_col.addLayout(input_row)
+        self.local_feedback = label('Apple catalog search · US storefront', 'muted', True)
+        right_col.addWidget(self.local_feedback)
+        right.addWidget(request_card)
+
+        commands_card = QFrame(); commands_card.setObjectName('card'); cmds = layout_column(commands_card, 21, 11)
+        cmds.addWidget(label('Chat commands', 'section'))
+        for cmd, meaning in [('!song', 'What’s playing now'), ('!sr AMEN Beyoncé', 'Request a track'),
+                             ('!queue', 'Show pending songs'), ('!unrequest', 'Cancel your latest request')]:
+            line = QHBoxLayout(); a=label(cmd); a.setStyleSheet(f'font-weight: 600; color: {ACCENT};')
+            line.addWidget(a); line.addStretch(1); line.addWidget(label(meaning,'muted')); cmds.addLayout(line)
+        more = label('Moderators: !sr on/off · !remove 2', 'muted'); cmds.addWidget(more)
+        right.addWidget(commands_card)
+
+        activity_card = QFrame(); activity_card.setObjectName('card'); a_col = layout_column(activity_card, 21, 10)
+        a_col.addWidget(label('Activity', 'section'))
+        self.activity_label = label('Your recent activity will appear here.', 'muted', True)
+        self.activity_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        a_col.addWidget(self.activity_label, 1)
+        right.addWidget(activity_card, 1)
+        content.addLayout(right, 4)
+        page.addLayout(content, 1)
+
+        footer = QHBoxLayout()
+        self.footer = label('Your music stays in Apple Music. Your requests stay local.', 'muted'); footer.addWidget(self.footer)
+        footer.addStretch(1)
+        footer.addWidget(label('SPINDLE  /  EARLY PREVIEW', 'eyebrow'))
+        page.addLayout(footer)
+
+    def start_monitor(self):
+        threading.Thread(target=lambda: asyncio.run(self.monitor.run()), daemon=True, name='AppleMedia').start()
+
+    def on_media(self, track):
+        self.engine.set_current(track)
+        self.bus.track.emit(track)
+
+    def update_track(self, track):
+        if track:
+            self.song_title.setText(track.title)
+            self.song_artist.setText(track.artist or 'Unknown artist')
+            self.song_album.setText(track.album or 'Apple Music')
+            self.now_status.setText('●  Playing' if track.playing else 'Ⅱ  Paused')
+            self.record.spinning = bool(track.playing)
+        else:
+            self.song_title.setText('Nothing playing')
+            self.song_artist.setText('Open Apple Music to get started')
+            self.song_album.setText('No Apple Music media session detected')
+            self.now_status.setText('○  Waiting for playback')
+            self.record.spinning = False
+
+    def on_status(self, message: str):
+        self.log(message)
+        lower = message.lower()
+        if 'connected to twitch chat' in lower:
+            self.twitch_status.setText('TWITCH CONNECTED')
+            self.twitch_status.setStyleSheet('background: #24372f; color: #add4bc; border: 1px solid #395549; border-radius: 10px; padding: 7px 10px; font-size: 11px;')
+            self.connect_button.setText('Connected'); self.connect_button.setEnabled(False)
+        elif 'twitch disconnected' in lower or 'connection failed' in lower:
+            self.twitch_status.setText('TWITCH OFFLINE')
+            self.twitch_status.setStyleSheet('background: #2b2925; color: #d8b9a2; border: 1px solid #514138; border-radius: 10px; padding: 7px 10px; font-size: 11px;')
+            self.connect_button.setEnabled(True); self.connect_button.setText('Reconnect Twitch')
+
+    def log(self, message: str):
+        entry = datetime.now().strftime('%H:%M') + '   ' + message
+        self.activity.insert(0, entry)
+        self.activity = self.activity[:7]
+        self.activity_label.setText('\n\n'.join(self.activity))
+
+    def refresh_queue(self):
+        while self.queue_list.count():
+            item = self.queue_list.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        pending = self.store.pending()
+        self.count.setText(f'{len(pending)} pending')
+        if not pending:
+            empty = QWidget(); col=QVBoxLayout(empty); col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            disc = label('◎'); disc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            disc.setStyleSheet('font-size: 50px; color: #8d7566;')
+            col.addWidget(disc)
+            title=label('The queue is yours'); title.setStyleSheet('font-size: 17px; font-weight: 600;')
+            title.setAlignment(Qt.AlignmentFlag.AlignCenter); col.addWidget(title)
+            sub=label('Requests from Twitch chat will land here.'); sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sub.setStyleSheet(f'color: {MUTED};'); col.addWidget(sub)
+            self.queue_list.addWidget(empty, 1)
+        else:
+            for index, request in enumerate(pending, 1):
+                card = QFrame(); card.setObjectName('rowCard')
+                row = QHBoxLayout(card); row.setContentsMargins(12, 10, 10, 10); row.setSpacing(11)
+                num = label(f'{index:02d}')
+                num.setStyleSheet(f'font-size: 14px; font-weight: 700; color: {ACCENT}; min-width: 25px;')
+                row.addWidget(num)
+                details=QVBoxLayout(); details.setSpacing(3)
+                details.addWidget(label(request.title, 'itemTitle'))
+                details.addWidget(label(f'{request.artist}  ·  @{request.viewer_name}', 'muted'))
+                row.addLayout(details,1)
+                play = button('Open', 'ghost'); play.setToolTip('Open song link. Does not alter Apple Music Up Next.')
+                play.clicked.connect(lambda _, url=request.url: self.open_url(url))
+                row.addWidget(play)
+                done = button('✓', 'ghost'); done.setToolTip('Mark this request played manually')
+                done.clicked.connect(lambda _, rid=request.id: self.resolve(rid,'played'))
+                row.addWidget(done)
+                remove = button('×', 'ghost'); remove.setToolTip('Remove this pending request')
+                remove.clicked.connect(lambda _, rid=request.id: self.resolve(rid,'removed'))
+                row.addWidget(remove)
+                self.queue_list.addWidget(card)
+            self.queue_list.addStretch(1)
+
+    def resolve(self, request_id, action):
+        if self.store.change(request_id, action):
+            self.log(f'Request #{request_id} marked {action}.')
+            self.refresh_queue()
+
+    def open_url(self, url):
+        if url.startswith('https://music.apple.com/') or url.startswith('https://itunes.apple.com/'):
+            QDesktopServices.openUrl(QUrl(url))
+
+    def add_local(self):
+        text = self.query.text().strip()
+        if not text: return
+        self.add_button.setEnabled(False)
+        self.local_feedback.setText('Searching Apple’s catalog…')
+        def work():
+            try:
+                result = self.engine.handle('local', 'Streamer', f'!sr {text}', is_moderator=True)
+            except Exception as exc:
+                result = f'Could not complete request: {exc}'
+            self.bus.local_result.emit(result or 'Could not process that request.')
+        threading.Thread(target=work, daemon=True).start()
+
+    def local_done(self, response):
+        self.add_button.setEnabled(True)
+        self.local_feedback.setText(response)
+        self.log(response)
+        if 'pending' in response.lower(): self.query.clear()
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec():
+            self.log('Preferences saved locally.')
+
+    def connect_twitch(self):
+        if self.twitch and self.twitch.running:
+            return
+        if not self.settings.twitch_client_id:
+            self.open_settings()
+            if not self.settings.twitch_client_id:
+                return
+        self.connect_button.setText('Connecting…'); self.connect_button.setEnabled(False)
+        self.twitch = TwitchClient(self.settings.twitch_client_id, self.engine, self.bus.status.emit,
+                                   self.bus.chat.emit, self.bus.device_code.emit)
+        threading.Thread(target=lambda: asyncio.run(self.twitch.run()), daemon=True, name='Twitch').start()
+
+    def show_code(self, code, url):
+        QMessageBox.information(self,'Authorize Twitch',
+            f'To connect Spindle to Twitch:\n\n1. Open {url}\n2. Enter this code: {code}\n3. Approve access\n\nThe browser has been opened for you.')
+
+    def closeEvent(self, event):
+        self.monitor.stop()
+        if self.twitch: self.twitch.stop()
+        # Threads are daemonic. Avoid closing SQLite while a chat command may still be active.
+        super().closeEvent(event)
+
+
+def launch() -> int:
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    app.setStyleSheet(CSS)
+    window = SpindleWindow()
+    window.show()
+    return app.exec()
