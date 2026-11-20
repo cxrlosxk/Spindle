@@ -451,11 +451,23 @@ class SpindleWindow(QMainWindow):
                 details=QVBoxLayout(); details.setSpacing(3)
                 details.addWidget(label(request.title, 'itemTitle'))
                 details.addWidget(label(f'{request.artist}  ·  @{request.viewer_name}  ·  ' +
-                                        ('Added to Up Next' if request.status == 'queued' else 'Pending'), 'muted'))
+                                        ('Added to Up Next' if request.status == 'queued' else
+                                         'Waiting for automatic delivery' if self.settings.native_queue_enabled
+                                         else 'Auto queue disabled'), 'muted'))
                 row.addLayout(details,1)
                 if request.status == 'pending':
-                    sync = button('Queue', 'ghost')
-                    sync.setToolTip('Attempt to add this song to the official Apple Music Up Next queue and verify it.')
+                    # This is optional troubleshooting, not an approval step.
+                    # With auto queue enabled the background worker already
+                    # handles every request in arrival order.
+                    sync = button(
+                        'Retry' if self.settings.native_queue_enabled else 'Queue',
+                        'ghost',
+                    )
+                    sync.setToolTip(
+                        'Optional manual retry if automatic delivery is delayed.'
+                        if self.settings.native_queue_enabled else
+                        'Auto queue is disabled. Enable it in Settings to avoid manual steps.'
+                    )
                     sync.clicked.connect(lambda _, rid=request.id: self.send_to_apple_music(rid))
                     row.addWidget(sync)
                 play = button('Open', 'ghost'); play.setToolTip('Open song link. Does not alter Apple Music Up Next.')
