@@ -226,7 +226,10 @@ def _compact_search_fixture():
         def SetValue(self, value, **kwargs):
             state['query'] = value
 
-    adapter._all = lambda root, **kw: [icon] if kw.get('kind') == 'button' else []
+    adapter._all = lambda root, **kw: (
+        [box] if kw.get('aid') == 'TextBox' and state['opened'] else
+        [icon] if kw.get('kind') == 'button' else []
+    )
     def find(root, **kw):
         if kw.get('aid') == 'TextBox':
             return box if state['opened'] else None
@@ -289,10 +292,56 @@ def test_compact_search_ambiguous_buttons_do_not_get_clicked():
 def test_compact_search_activation_without_field_reports_next_action():
     from spindle.native_queue import NativeQueueError
     adapter, state, box, icon = _compact_search_fixture()
-    old_find = adapter._find
-    adapter._find = lambda root, **kw: (
-        None if kw.get('aid') == 'TextBox' else old_find(root, **kw)
+    old_all = adapter._all
+    adapter._all = lambda root, **kw: (
+        [] if kw.get('aid') == 'TextBox' else old_all(root, **kw)
     )
     with pytest.raises(NativeQueueError, match='Open Search manually'):
         adapter._open_compact_search(object())
     assert state['activated'] == 1
+
+
+def test_control_wrapper_handles_custom_winui_control_type():
+    """The third-party wrapper can return None for newer WinUI controls."""
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    element = object()
+    calls = []
+    class GenericControl:
+        @staticmethod
+        def CreateControlFromElement(e):
+            calls.append(('factory',e))
+            return None
+        def __init__(self, **kwargs):
+            calls.append(('generic',kwargs['element']))
+    adapter.auto = SimpleNamespace(Control=GenericControl)
+    result = adapter._control(element)
+    assert isinstance(result, GenericControl)
+    assert calls == [('factory', element), ('generic', element)]
+
+
+def test_control_wrapper_missing_element_is_actionable_error():
+    from spindle.native_queue import WindowsQueueUIA, NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    with pytest.raises(NativeQueueError, match='was not found'):
+        adapter._control(None)
+
+
+def test_hidden_search_field_is_ignored_until_sidebar_is_open():
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(EditControl='edit')
+    hidden = SimpleNamespace(
+        CurrentIsOffscreen=True,
+        CurrentBoundingRectangle=SimpleNamespace(left=0,right=200,top=0,bottom=20),
+    )
+    shown = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0,right=200,top=0,bottom=20),
+    )
+    adapter._all = lambda root, **kw: [hidden]
+    assert adapter._visible_search_field(object()) is None
+    adapter._all = lambda root, **kw: [hidden, shown]
+    assert adapter._visible_search_field(object()) is shown
