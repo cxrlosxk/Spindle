@@ -1196,8 +1196,16 @@ class WindowsQueueUIA:
                 + 'Apple Music did not expose a newly matching song in Playing Next.'
             )
         except Exception as exc:
+            trace = ''
+            if stage == 'find song via Search' and 'Search trace:' not in str(exc):
+                trace = self._capture_failed_search(
+                    locals().get('window'), 'search-control-exception',
+                )
+            elif stage == 'verify Playing Next after insertion':
+                trace = self._capture_failed_queue(locals().get('window'))
             raise NativeQueueError(
-                f'{stage}: {type(exc).__name__}: {str(exc)[:170]}'
+                (trace.strip() + ' | ' if trace else '')
+                + f'{stage}: {type(exc).__name__}: {str(exc)[:170]}'
             ) from exc
         finally:
             self._finish_window()
