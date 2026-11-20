@@ -142,8 +142,12 @@ class WindowsQueueUIA:
 
     def _row_texts(self, row):
         items = self._all(row, kind=self.types.TextControl)
-        return [x.CurrentName.strip() for x in items if x.CurrentName.strip()
-                and not all(0xE000 <= ord(c) <= 0xF8FF for c in x.CurrentName)]
+        texts = []
+        for item in items:
+            name = (item.CurrentName or '').strip()
+            if name and not all(0xE000 <= ord(c) <= 0xF8FF for c in name):
+                texts.append(name)
+        return texts
 
     def _playing_next(self, window):
         containers = self._all(window, kind=self.types.ListControl)
