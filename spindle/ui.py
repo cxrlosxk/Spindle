@@ -213,11 +213,11 @@ class SettingsDialog(QDialog):
             if enabled else None
         )
         caution = label(
-            'Background-only mode never deliberately activates Apple Music or '
-            'sends global keystrokes. Spindle still tries native controls, '
-            'but songs remain pending and retry if Apple Music requires focus. '
-            'Compatibility mode may briefly interrupt your game. Automatic '
-            'requests never need individual approval.',
+            'Game-safe mode does not operate Apple Music while another app '
+            'has focus. Requests wait and resume automatically when you switch '
+            'back to Apple Music. This prevents UI Automation from taking focus '
+            'during a game. Compatibility mode can insert while gaming, but '
+            'may interrupt gameplay. Requests never require approval.',
             'muted', True,
         )
         outer.addWidget(caution)
@@ -258,6 +258,7 @@ class SpindleWindow(QMainWindow):
         self.store = QueueStore(data_dir() / 'requests.db')
         self.native_queue = NativeQueueBridge()
         self.native_queue.allow_focus_handoff = self.settings.effective_focus_handoff
+        self.native_queue.protect_foreground = self.settings.protect_foreground
         self.syncing_ids: set[int] = set()
         self.sync_lock = threading.Lock()
         self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
@@ -485,21 +486,22 @@ class SpindleWindow(QMainWindow):
                 details.addWidget(label(request.title, 'itemTitle'))
                 details.addWidget(label(f'{request.artist}  ·  @{request.viewer_name}  ·  ' +
                                         ('Added to Up Next' if request.status == 'queued' else
+                                         'Verifying Apple Music — no duplicate will be added'
+                                         if request.status == 'verifying' else
                                          'Waiting for automatic delivery' if self.settings.native_queue_enabled
                                          else 'Auto queue disabled'), 'muted'))
                 row.addLayout(details,1)
-                if request.status == 'pending':
-                    # This is optional troubleshooting, not an approval step.
-                    # With auto queue enabled the background worker already
-                    # handles every request in arrival order.
+                if request.status in ('pending', 'verifying'):
+                    # The optional button only wakes the serialized worker;
+                    # it never launches a second native Add to Queue operation.
                     sync = button(
-                        'Retry' if self.settings.native_queue_enabled else 'Queue',
+                        'Check queue' if request.status == 'verifying' else 'Retry',
                         'ghost',
                     )
                     sync.setToolTip(
-                        'Optional manual retry if automatic delivery is delayed.'
-                        if self.settings.native_queue_enabled else
-                        'Auto queue is disabled. Enable it in Settings to avoid manual steps.'
+                        'Read-only verification; does not add this song again.'
+                        if request.status == 'verifying' else
+                        'Wake automatic delivery without starting a parallel request.'
                     )
                     sync.clicked.connect(lambda _, rid=request.id: self.send_to_apple_music(rid))
                     row.addWidget(sync)
@@ -555,32 +557,30 @@ class SpindleWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def send_to_apple_music(self, request_id: int):
-        # Explicit retry is useful for requests made before native queue sync
-        # was enabled, as well as occasional transient UIA failures.
-        with self.sync_lock:
-            if request_id in self.syncing_ids:
-                return
-            self.syncing_ids.add(request_id)
-        self.log(f'Checking Apple Music Up Next for request #{request_id}…')
+        """Request a single serialized worker retry/check, never a parallel Add.
 
-        def work():
-            try:
-                target = next((p for p in self.store.pending() if p.id == request_id), None)
-                if not target:
-                    self.bus.status.emit(f'Request #{request_id} is no longer pending.')
-                    return
-                track = Track(target.title, target.artist, target.album,
-                              target.duration_ms, target.track_id, target.url)
-                result = self.native_queue.enqueue(track, first_request=not bool(self.store.queued()))
-                if result.verified and self.store.mark_queued(request_id):
-                    self.bus.status.emit(f'Apple Music Up Next verified for {track.title} — {track.artist}')
-                    self.bus.queue_changed.emit()
-                else:
-                    self.bus.status.emit(f'Could not verify request #{request_id} in Apple Music: {result.reason}')
-            finally:
-                with self.sync_lock:
-                    self.syncing_ids.discard(request_id)
-        threading.Thread(target=work, daemon=True, name=f'QueueRequest-{request_id}').start()
+        The previous Retry button launched a second native queue operation
+        alongside the background worker, risking two insertions. All requests
+        now pass through the one durable, idempotent worker.
+        """
+        if not self.settings.native_queue_enabled:
+            self.log('Enable automatic Apple Music requests in Settings first.')
+            return
+        active = next((r for r in self.store.active() if r.id == request_id), None)
+        if not active:
+            self.log(f'Request #{request_id} is no longer pending.')
+            return
+        if active.status == 'verifying':
+            self.log(
+                f'Checking request #{request_id} without sending another Add '
+                'to Queue action.'
+            )
+        elif active.status == 'pending':
+            self.log(f'Waking automatic delivery for request #{request_id}.')
+        else:
+            self.log(f'Request #{request_id} is already marked as queued.')
+            return
+        self.auto_queue.wake(request_id)
 
     def open_url(self, url):
         if url.startswith('https://music.apple.com/') or url.startswith('https://itunes.apple.com/'):
@@ -612,6 +612,7 @@ class SpindleWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
             self.native_queue.allow_focus_handoff = self.settings.effective_focus_handoff
+        self.native_queue.protect_foreground = self.settings.protect_foreground
             self.auto_queue.wake()
             self.log(
                 'Automatic Apple Music requests '
