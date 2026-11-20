@@ -283,6 +283,24 @@ class WindowsQueueUIA:
                 except Exception:
                     pass
 
+    def _visible_action_button(self, window, automation_id):
+        """Never invoke a stale WinUI button left behind after a layout change."""
+        for button in self._all(
+            window, aid=automation_id, kind=self.types.ButtonControl
+        ):
+            try:
+                if button.CurrentIsOffscreen:
+                    continue
+                rect = button.CurrentBoundingRectangle
+                if rect and (rect.right <= rect.left or rect.bottom <= rect.top):
+                    continue
+            except AttributeError:
+                pass
+            except Exception:
+                continue
+            return button
+        return None
+
     def _visible_search_field(self, window):
         """Reject an EditControl left in the UIA tree after Search is closed."""
         for element in self._all(window, aid='TextBox', kind=self.types.EditControl):
@@ -420,11 +438,10 @@ class WindowsQueueUIA:
             old_id = None
         # UIA ValuePattern avoids typing into the streamer's active game.
         value.SetValue(f'{track.title} {track.artist}', waitTime=0)
-        submit = self._find(window, aid='QueryButton', kind=self.types.ButtonControl)
+        submit = self._visible_action_button(window, 'QueryButton')
         if submit is None:
             submit = self._wait(
-                lambda: self._find(window, aid='QueryButton',
-                                   kind=self.types.ButtonControl),
+                lambda: self._visible_action_button(window, 'QueryButton'),
                 1.5, 0.12,
             )
         if submit is not None:
