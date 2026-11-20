@@ -225,7 +225,17 @@ class WindowsQueueUIA:
         if not matched:
             raise NativeQueueError('Apple Music search could not verify the exact title and artist; request kept in Spindle.')
         if len(matched) > 1:
-            raise NativeQueueError('Multiple native search results match. Choose an Apple Music song manually to avoid the wrong edition.')
+            # Prefer an exact album match only when it unambiguously identifies
+            # one result; never randomly pick an alternative recording/reissue.
+            album_matches = []
+            if track.album:
+                for row in matched:
+                    texts = self._row_texts(row)
+                    if len(texts) >= 3 and norm(texts[2]) == norm(track.album):
+                        album_matches.append(row)
+            if len(album_matches) == 1:
+                return album_matches[0]
+            raise NativeQueueError('Multiple versions match this song. Open the Apple Music link to choose a version.')
         return matched[0]
 
     def _open_more(self, row):
