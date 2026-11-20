@@ -193,3 +193,25 @@ def test_foreground_protection_prevents_delivery_without_verifying_state_lock(tm
         assert len(store.pending()) == 1
     finally:
         store.close()
+
+
+def test_existing_install_upgrades_to_strict_focus_guard_once(tmp_path):
+    import json
+    from spindle.settings import Settings
+    path = tmp_path / 'settings.json'
+    path.write_text(json.dumps({
+        'native_queue_enabled': True,
+        'protect_foreground': False,
+        'allow_focus_handoff': True,
+        'auto_queue_v2_initialized': True,
+    }), encoding='utf-8')
+    migrated = Settings.load(tmp_path)
+    assert migrated.protect_foreground
+    assert not migrated.effective_focus_handoff
+    # The streamer can still deliberately opt back into compatibility.
+    migrated.protect_foreground = False
+    migrated.save(tmp_path)
+    after = Settings.load(tmp_path)
+    assert not after.protect_foreground
+    assert after.effective_focus_handoff
+    assert after.strict_focus_guard_v054_initialized
