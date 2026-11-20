@@ -30,6 +30,7 @@ from .queue_store import QueueStore
 from .settings import Settings, data_dir
 from .twitch import TwitchClient
 from .native_queue import NativeQueueBridge
+from .auto_queue import AutoQueueService
 from .models import Track
 
 BG = '#0d1014'
@@ -180,10 +181,18 @@ class SettingsDialog(QDialog):
         self.enabled = QCheckBox('Allow song requests in chat')
         self.enabled.setChecked(settings.requests_enabled)
         outer.addWidget(self.enabled)
-        self.native_queue_enabled = QCheckBox('Experimental: add requests to Apple Music Playing Next automatically')
+        self.native_queue_enabled = QCheckBox(
+            'Automatically add Twitch requests to Apple Music Up Next (no approval)'
+        )
         self.native_queue_enabled.setChecked(settings.native_queue_enabled)
         outer.addWidget(self.native_queue_enabled)
-        caution = label('This uses Windows accessibility, not an Apple API. Spindle only confirms requests it can see in Playing Next. It may change the Apple Music window in the background and can fail on some app versions.', 'muted', True)
+        caution = label(
+            'Spindle automatically processes pending requests in order and retries '
+            'transient failures. Songs are marked as added only after Apple Music '
+            'confirms them. This uses experimental Windows UI automation and may '
+            'briefly restore Apple Music when it was minimized.',
+            'muted', True,
+        )
         outer.addWidget(caution)
         links = label('Register at dev.twitch.tv/console/apps. Use a Public client; Device Code authorization runs in your browser.', 'muted', True)
         outer.addWidget(links)
@@ -220,6 +229,16 @@ class SpindleWindow(QMainWindow):
         self.sync_lock = threading.Lock()
         self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
                                     native_queue=self.native_queue, on_status=self.bus.status.emit)
+        # No per-request approval: Twitch commands enter the durable queue
+        # immediately, and the background worker delivers in FIFO order.
+        self.auto_queue = AutoQueueService(
+            self.store, self.native_queue,
+            lambda: self.settings.native_queue_enabled,
+            on_status=self.bus.status.emit,
+            on_change=self.bus.queue_changed.emit,
+        )
+        self.engine.deferred_native_delivery = True
+        self.engine.on_request_accepted = self.auto_queue.wake
         self.monitor = AppleMusicMonitor(self.on_media, self.bus.status.emit)
         self.twitch: TwitchClient | None = None
         self.activity = []
@@ -233,6 +252,7 @@ class SpindleWindow(QMainWindow):
         self.bus.device_code.connect(self.show_code)
         self.refresh_queue()
         self.start_monitor()
+        self.auto_queue.start()
 
     def build_ui(self):
         root = QWidget(); root.setObjectName('root'); self.setCentralWidget(root)
@@ -407,7 +427,10 @@ class SpindleWindow(QMainWindow):
             if item.widget(): item.widget().deleteLater()
         pending = self.store.active()
         verified = sum(p.status == 'queued' for p in pending)
-        self.count.setText(f'{len(pending)} requests · {verified} in Apple Music')
+        self.count.setText(
+            f'{len(pending)} requests · {verified} in Apple Music'
+            + (' · auto queue on' if self.settings.native_queue_enabled else ' · auto queue off')
+        )
         if not pending:
             empty = QWidget(); col=QVBoxLayout(empty); col.setAlignment(Qt.AlignmentFlag.AlignCenter)
             disc = label('◎'); disc.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -540,7 +563,11 @@ class SpindleWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
-            self.log('Preferences saved locally.')
+            self.auto_queue.wake()
+            self.log(
+                'Automatic Apple Music requests '
+                + ('enabled.' if self.settings.native_queue_enabled else 'disabled.')
+            )
 
     def connect_twitch(self):
         if self.twitch and self.twitch.running:
@@ -560,6 +587,7 @@ class SpindleWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.monitor.stop()
+        self.auto_queue.stop()
         if self.twitch: self.twitch.stop()
         # Threads are daemonic. Avoid closing SQLite while a chat command may still be active.
         super().closeEvent(event)
