@@ -433,6 +433,40 @@ class WindowsQueueUIA:
             + '. Inspect Apple Music to identify this control.'
         )
 
+
+    def _usable_result(self, element):
+        """Exclude virtualized Apple Music result rows with zero-size bounds."""
+        try:
+            if element.CurrentIsOffscreen:
+                return False
+            bounds = element.CurrentBoundingRectangle
+            if bounds is not None:
+                return bounds.right > bounds.left and bounds.bottom > bounds.top
+        except AttributeError:
+            pass  # Test fixtures can omit WinUI geometry.
+        except Exception:
+            return False
+        return True
+
+    def _scroll_song_section(self, songs):
+        """Realize the Songs section using UI Automation without input events."""
+        try:
+            pattern = self._control(songs).GetScrollItemPattern()
+            if pattern:
+                pattern.ScrollIntoView(waitTime=0)
+        except Exception:
+            pass
+
+    def _matching_song_rows(self, rows, track):
+        matches = []
+        for row in rows:
+            if not self._usable_result(row):
+                continue
+            texts = self._row_texts(row)
+            if len(texts) >= 2 and strict_track_match(texts[0], texts[1], track):
+                matches.append(row)
+        return matches
+
     def _search_results(self, window, track: Track):
         search = self._visible_search_field(window)
         if search is None:
@@ -469,7 +503,8 @@ class WindowsQueueUIA:
                         return None
                 except Exception:
                     pass
-            rows = self._rows(songs)
+            self._scroll_song_section(songs)
+            rows = [r for r in self._rows(songs) if self._usable_result(r)]
             return rows if rows else None
 
         rows = self._wait(find_rows, 9.0, 0.2)
