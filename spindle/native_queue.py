@@ -411,24 +411,32 @@ class WindowsQueueUIA:
             )
         return box
 
+    def _set_search_text(self, element, query: str):
+        """Set target search text through accessibility, never global keystrokes."""
+        control = self._control(element)
+        failures = []
+        for method in ('GetValuePattern', 'GetLegacyIAccessiblePattern'):
+            try:
+                pattern = getattr(control, method)()
+                if pattern is None:
+                    continue
+                setter = getattr(pattern, 'SetValue', None)
+                if setter is None:
+                    continue
+                setter(query, waitTime=0)
+                return
+            except Exception as exc:
+                failures.append(method + ': ' + type(exc).__name__)
+        raise NativeQueueError(
+            'Search field has no working accessibility SetValue pattern'
+            + (' (' + ', '.join(failures) + ')' if failures else '')
+            + '. Inspect Apple Music to identify this control.'
+        )
+
     def _search_results(self, window, track: Track):
         search = self._visible_search_field(window)
         if search is None:
             search = self._open_compact_search(window)
-        try:
-            value = self._control(search).GetValuePattern()
-        except NativeQueueError:
-            raise
-        except Exception as exc:
-            raise NativeQueueError(
-                f'Apple Music search field could not be accessed '
-                f'({type(exc).__name__}). Close and reopen Search, then retry.'
-            ) from exc
-        if not value:
-            raise NativeQueueError(
-                'Apple Music search field has no accessibility Value pattern. '
-                'Open Search manually and retry.'
-            )
         stale_content = self._find(window, name='Content', kind=self.types.GroupControl)
         stale_section = self._find(stale_content, name='Songs',
                                    kind=self.types.ListItemControl)
@@ -436,8 +444,8 @@ class WindowsQueueUIA:
             old_id = stale_section.GetRuntimeId() if stale_section else None
         except Exception:
             old_id = None
-        # UIA ValuePattern avoids typing into the streamer's active game.
-        value.SetValue(f'{track.title} {track.artist}', waitTime=0)
+        # Avoid keystrokes that would interrupt a game on another monitor.
+        self._set_search_text(search, f'{track.title} {track.artist}')
         submit = self._visible_action_button(window, 'QueryButton')
         if submit is None:
             submit = self._wait(
