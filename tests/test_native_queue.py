@@ -190,3 +190,109 @@ def test_native_empty_label_is_respected_when_present():
     assert adapter._empty_queue_visible(object()) is True
     label.CurrentIsOffscreen = True
     assert adapter._empty_queue_visible(object()) is False
+
+
+def _compact_search_fixture():
+    """In-memory WinUI accessibility fixture for a narrow Apple Music window."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(
+        ButtonControl='button', ListItemControl='list', TabItemControl='tab',
+        EditControl='edit', GroupControl='group',
+    )
+    state = {'opened': False, 'activated': 0, 'query': '', 'submitted': 0}
+    icon = SimpleNamespace(
+        CurrentName='Search', CurrentAutomationId='',
+        CurrentIsOffscreen=False, CurrentControlType='button',
+    )
+    box = object()
+    result_row = object()
+    songs = SimpleNamespace(GetRuntimeId=lambda: 'new-rows')
+    section = object()
+
+    class SearchControl:
+        def GetInvokePattern(self):
+            return self
+
+        def Invoke(self, **kwargs):
+            state['opened'] = True
+            state['activated'] += 1
+
+    class SearchBoxControl:
+        def GetValuePattern(self):
+            return self
+
+        def SetValue(self, value, **kwargs):
+            state['query'] = value
+
+    adapter._all = lambda root, **kw: [icon] if kw.get('kind') == 'button' else []
+    def find(root, **kw):
+        if kw.get('aid') == 'TextBox':
+            return box if state['opened'] else None
+        if kw.get('aid') == 'QueryButton':
+            return None  # AutoSuggestBox that updates automatically.
+        if kw.get('name') == 'Content':
+            return section if state['query'] else None
+        if kw.get('name') == 'Songs':
+            return songs if state['query'] else None
+        return None
+
+    adapter._find = find
+    adapter._control = lambda node: SearchControl() if node is icon else SearchBoxControl()
+    adapter._wait = lambda fn, *args, **kw: fn()
+    adapter._rows = lambda section: [result_row]
+    return adapter, state, box, icon
+
+
+def test_compact_search_icon_is_activated_and_query_runs():
+    """Regression: the recorded compact Apple Music sidebar hides TextBox."""
+    from spindle.native_queue import WindowsQueueUIA
+    adapter, state, box, icon = _compact_search_fixture()
+    rows = adapter._search_results(object(), SONG)
+    assert rows
+    assert state['opened'] is True
+    assert state['activated'] == 1
+    assert state['query'] == 'AMEN Beyoncé'
+
+
+def test_expanded_search_does_not_reactivate_navigation():
+    adapter, state, box, icon = _compact_search_fixture()
+    state['opened'] = True
+    assert adapter._search_results(object(), SONG)
+    assert state['activated'] == 0
+
+
+def test_compact_search_absent_is_actionable_and_safe():
+    from spindle.native_queue import NativeQueueError
+    adapter, state, box, icon = _compact_search_fixture()
+    adapter._all = lambda root, **kw: []
+    with pytest.raises(NativeQueueError, match='magnifying-glass'):
+        adapter._open_compact_search(object())
+    assert state['activated'] == 0
+
+
+def test_compact_search_ambiguous_buttons_do_not_get_clicked():
+    from spindle.native_queue import NativeQueueError
+    from types import SimpleNamespace
+    adapter, state, box, icon = _compact_search_fixture()
+    second = SimpleNamespace(
+        CurrentName='Search', CurrentAutomationId='',
+        CurrentIsOffscreen=False, CurrentControlType='button',
+    )
+    adapter._all = lambda root, **kw: [icon, second] if kw.get('kind') == 'button' else []
+    with pytest.raises(NativeQueueError, match='multiple Search controls'):
+        adapter._open_compact_search(object())
+    assert state['activated'] == 0
+
+
+def test_compact_search_activation_without_field_reports_next_action():
+    from spindle.native_queue import NativeQueueError
+    adapter, state, box, icon = _compact_search_fixture()
+    old_find = adapter._find
+    adapter._find = lambda root, **kw: (
+        None if kw.get('aid') == 'TextBox' else old_find(root, **kw)
+    )
+    with pytest.raises(NativeQueueError, match='Open Search manually'):
+        adapter._open_compact_search(object())
+    assert state['activated'] == 1
