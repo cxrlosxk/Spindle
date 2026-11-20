@@ -26,6 +26,11 @@ class Settings:
     protect_foreground: bool = True  # Game-safe: never request focus handoff.
     auto_queue_v2_initialized: bool = True
 
+    @property
+    def effective_focus_handoff(self) -> bool:
+        """A legacy compatibility opt-in must never override game protection."""
+        return bool(self.allow_focus_handoff and not self.protect_foreground)
+
     @classmethod
     def load(cls, directory: Path | None = None) -> 'Settings':
         path = (directory or data_dir()) / 'settings.json'
