@@ -175,6 +175,12 @@ class SettingsDialog(QDialog):
         form.addRow('Per viewer', self.per_viewer)
         self.cooldown = QSpinBox(); self.cooldown.setRange(0, 3600); self.cooldown.setSuffix(' sec'); self.cooldown.setValue(settings.cooldown_seconds)
         form.addRow('Request cooldown', self.cooldown)
+        policy_note = label(
+            'The broadcaster has unlimited requests and no cooldown. '
+            'Viewer and moderator limits still apply.',
+            'muted', True,
+        )
+        outer.addWidget(policy_note)
         self.duration = QSpinBox(); self.duration.setRange(1, 120); self.duration.setSuffix(' min'); self.duration.setValue(settings.max_duration_minutes)
         form.addRow('Max song length', self.duration)
         outer.addLayout(form)
@@ -251,10 +257,7 @@ class SpindleWindow(QMainWindow):
         self.settings = Settings.load()
         self.store = QueueStore(data_dir() / 'requests.db')
         self.native_queue = NativeQueueBridge()
-        self.native_queue.allow_focus_handoff = (
-            self.settings.allow_focus_handoff
-            and not self.settings.protect_foreground
-        )
+        self.native_queue.allow_focus_handoff = self.settings.effective_focus_handoff
         self.syncing_ids: set[int] = set()
         self.sync_lock = threading.Lock()
         self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
@@ -608,10 +611,7 @@ class SpindleWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
-            self.native_queue.allow_focus_handoff = (
-            self.settings.allow_focus_handoff
-            and not self.settings.protect_foreground
-        )
+            self.native_queue.allow_focus_handoff = self.settings.effective_focus_handoff
             self.auto_queue.wake()
             self.log(
                 'Automatic Apple Music requests '
