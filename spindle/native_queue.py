@@ -687,6 +687,65 @@ class WindowsQueueUIA:
             texts = ()
         return runtime, status_name, texts
 
+    def _capture_failed_search(self, window, submission):
+        """Save one throttled, privacy-redacted trace after failed full search.
+
+        The existing Inspector is a manual snapshot, often taken after the
+        failed action. Capture automatically at the failure itself so we can
+        distinguish Home, autocomplete and a real Songs results page. Never
+        include the search query, listener name, tokens or track metadata.
+        """
+        try:
+            now = time.monotonic()
+            if now - getattr(self, '_last_search_trace_at', -10000) < 600:
+                return ''
+            from .diagnostics import inspect_window
+            from .settings import data_dir
+            from datetime import datetime, timezone
+            import json
+            report = inspect_window(self)
+            controls = report.get('controls', [])
+            def has_control(*, aid=None, name=None, cls=None):
+                return any(
+                    (aid is None or c.get('automation_id') == aid)
+                    and (name is None or c.get('name') == name)
+                    and (cls is None or c.get('class') == cls)
+                    for c in controls
+                )
+            report['failure_context'] = {
+                'stage': 'full-search-results-not-confirmed',
+                'submission_method': str(submission)[:80],
+                'search_text_box_exposed': has_control(aid='TextBox'),
+                'query_button_exposed': has_control(aid='QueryButton'),
+                'autosuggest_box_exposed': has_control(cls='AutoSuggestBox'),
+                'home_page_exposed': has_control(name='Home'),
+                'songs_section_exposed': has_control(name='Songs'),
+                'no_query_or_track_details_saved': True,
+            }
+            folder = data_dir() / 'diagnostics'
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
+            target = folder / ('spindle-search-failure-' + stamp + '.json')
+            temporary = target.with_suffix('.tmp')
+            temporary.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            temporary.replace(target)
+            self._last_search_trace_at = now
+            # Keep a small evidence window; automatic retries must not fill
+            # the user's disk with hundreds of repeated diagnostic snapshots.
+            prior = sorted(folder.glob('spindle-search-failure-*.json'))
+            for outdated in prior[:-8]:
+                try:
+                    outdated.unlink()
+                except OSError:
+                    pass
+            return ' Search trace: ' + target.name
+        except Exception:
+            # Diagnostics must never cause a queue operation to fail by itself.
+            return ''
+
     def _search_results(self, window, track: Track, query_override=None):
         search = self._visible_search_field(window)
         if search is None:
@@ -752,12 +811,11 @@ class WindowsQueueUIA:
             if rows:
                 return rows
             submission += '+focused-enter'
+        trace = self._capture_failed_search(window, submission)
         raise NativeQueueError(
-            'Apple Music did not show a newly submitted full search-results '
-            'page after ' + submission + '. Spindle will not use old results '
-            'or the four-item suggestion dropdown. If background submission '
-            'is unsupported on this Apple Music build, Settings offers an '
-            'optional brief-focus fallback.'
+            'Apple Music did not open full search results after '
+            + submission + '. The autocomplete suggestions are not full '
+            'results.' + trace
         )
 
     def _open_all_songs(self, window):
