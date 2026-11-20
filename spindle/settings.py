@@ -24,6 +24,7 @@ class Settings:
     native_queue_enabled: bool = True  # Automatic song requests, switchable in Settings.
     allow_focus_handoff: bool = False  # Legacy compatibility preference.
     protect_foreground: bool = True  # Game-safe: never request focus handoff.
+    strict_focus_guard_v054_initialized: bool = True
     auto_queue_v2_initialized: bool = True
 
     @property
@@ -46,6 +47,16 @@ class Settings:
             if 'auto_queue_v2_initialized' not in raw:
                 filtered['native_queue_enabled'] = True
                 filtered['auto_queue_v2_initialized'] = True
+                settings = cls(**filtered)
+                settings.save(directory)
+                return settings
+            if not raw.get('strict_focus_guard_v054_initialized', False):
+                # Earlier "background-only" releases could still activate
+                # Apple Music through UIA Invoke. Upgrade existing installs
+                # to strict foreground protection once, while preserving the
+                # explicit compatibility option for subsequent user changes.
+                filtered['protect_foreground'] = True
+                filtered['strict_focus_guard_v054_initialized'] = True
                 settings = cls(**filtered)
                 settings.save(directory)
                 return settings
