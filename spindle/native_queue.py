@@ -63,6 +63,20 @@ class WindowsQueueUIA:
         self.user32 = ctypes.windll.user32
         self._condition_all = self.api.CreateTrueCondition()
         self._hwnd = None
+        self._temporarily_restored_hwnd = None
+
+    def _finish_window(self):
+        """Return Apple Music to its minimized state without activation."""
+        hwnd = getattr(self, '_temporarily_restored_hwnd', None)
+        self._temporarily_restored_hwnd = None
+        if hwnd is None:
+            return
+        try:
+            if self.user32.IsWindow(hwnd):
+                # SW_SHOWMINNOACTIVE: keep the streamer's foreground game alone.
+                self.user32.ShowWindowAsync(hwnd, 7)
+        except Exception:
+            pass
 
     def _find_window(self):
         ct = self.ctypes
@@ -86,8 +100,22 @@ class WindowsQueueUIA:
         if not matches:
             raise NativeQueueError('Open the official Apple Music Windows app before enabling native queue sync.')
         hwnd = matches[0]
+        self._hwnd = hwnd
         if u.IsIconic(hwnd):
-            raise NativeQueueError('Apple Music is minimized; restore its window before queueing.')
+            # UIA has no usable visual tree while Apple Music is minimized.
+            # SW_SHOWNOACTIVATE shows it at its existing location but should
+            # not take the foreground focus away from the user's game.
+            if not u.ShowWindowAsync(hwnd, 4):
+                # A false return is not always an error; still poll the state.
+                pass
+            self._temporarily_restored_hwnd = hwnd
+            if not self._wait(lambda: not u.IsIconic(hwnd), 3.0, 0.12):
+                self._finish_window()
+                raise NativeQueueError(
+                    'Apple Music could not be restored in the background for '
+                    'queue insertion. No keyboard input was sent.'
+                )
+            time.sleep(0.2)
         return self.api.ElementFromHandle(hwnd)
 
     def _cond(self, *, aid=None, name=None, kind=None):
@@ -696,11 +724,16 @@ class WindowsQueueUIA:
             raise NativeQueueError(
                 f'{stage}: {type(exc).__name__}: {str(exc)[:170]}'
             ) from exc
+        finally:
+            self._finish_window()
 
     def inspect_diagnostics(self):
-        """Passive UIA snapshot for users who explicitly click Diagnose."""
+        """Inspect without sending input, then restore the prior window state."""
         from .diagnostics import inspect_window
-        return inspect_window(self)
+        try:
+            return inspect_window(self)
+        finally:
+            self._finish_window()
 
 
 class NativeQueueBridge:
