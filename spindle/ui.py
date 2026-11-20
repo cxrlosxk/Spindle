@@ -568,7 +568,10 @@ class SpindleWindow(QMainWindow):
         self.local_feedback.setText('Searching Apple’s catalog…')
         def work():
             try:
-                result = self.engine.handle('local', 'Streamer', f'!sr {text}', is_moderator=True)
+                result = self.engine.handle(
+                    'local', 'Streamer', f'!sr {text}',
+                    is_moderator=True, is_broadcaster=True,
+                )
             except Exception as exc:
                 result = f'Could not complete request: {exc}'
             self.bus.local_result.emit(result or 'Could not process that request.')
