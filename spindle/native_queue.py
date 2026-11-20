@@ -155,7 +155,9 @@ class WindowsQueueUIA:
                     'queue insertion. No keyboard input was sent.'
                 )
             time.sleep(0.2)
-        return self.api.ElementFromHandle(hwnd)
+        window = self.api.ElementFromHandle(hwnd)
+        self._window_element = window
+        return window
 
     def _cond(self, *, aid=None, name=None, kind=None):
         parts = []
@@ -171,16 +173,62 @@ class WindowsQueueUIA:
             result = self.api.CreateAndCondition(result, part)
         return result
 
+    @staticmethod
+    def _transient_uia_error(exc):
+        message = str(exc).casefold()
+        return any(term in message for term in (
+            'null com pointer', 'element not available', 'rpc_e_disconnected',
+            'object invoked has disconnected', '0x80040201',
+        ))
+
+    def _rebind_root(self, root):
+        """Refresh the outer WinUI root after a restore or navigation redraw."""
+        if root is not getattr(self, '_window_element', None):
+            return root
+        hwnd = getattr(self, '_hwnd', None)
+        if hwnd is None:
+            return root
+        try:
+            fresh = self.api.ElementFromHandle(hwnd)
+            if fresh is not None:
+                self._window_element = fresh
+                return fresh
+        except Exception:
+            pass
+        return root
+
     def _find(self, root, *, aid=None, name=None, kind=None, scope=4):
         if root is None:
             return None
-        return root.FindFirst(scope, self._cond(aid=aid, name=name, kind=kind))
+        for attempt in range(2):
+            try:
+                return root.FindFirst(
+                    scope, self._cond(aid=aid, name=name, kind=kind),
+                )
+            except Exception as exc:
+                if not self._transient_uia_error(exc):
+                    raise
+                if attempt == 0:
+                    time.sleep(0.12)
+                    root = self._rebind_root(root)
+        return None
 
     def _all(self, root, *, aid=None, name=None, kind=None, scope=4):
         if root is None:
             return []
-        arr = root.FindAll(scope, self._cond(aid=aid, name=name, kind=kind))
-        return [arr.GetElement(i) for i in range(arr.Length)] if arr else []
+        for attempt in range(2):
+            try:
+                arr = root.FindAll(
+                    scope, self._cond(aid=aid, name=name, kind=kind),
+                )
+                return [arr.GetElement(i) for i in range(arr.Length)] if arr else []
+            except Exception as exc:
+                if not self._transient_uia_error(exc):
+                    raise
+                if attempt == 0:
+                    time.sleep(0.12)
+                    root = self._rebind_root(root)
+        return []
 
     def _control(self, element):
         """Wrap a live UIA element, including unknown/custom WinUI control types.
