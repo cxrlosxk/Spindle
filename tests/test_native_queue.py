@@ -840,3 +840,52 @@ def test_minimized_apple_music_can_be_restored_without_activating_window():
     adapter._finish_window()
     assert state['show_commands'] == [4, 7]
     assert state['minimized']
+
+
+def test_failed_search_saves_redacted_ui_snapshot_without_manual_inspection(tmp_path, monkeypatch):
+    """Regression from Nov 20 capture: Home + Search TextBox, no QueryButton."""
+    import json
+    from spindle import diagnostics, settings
+    from spindle.native_queue import WindowsQueueUIA
+    monkeypatch.setattr(settings, 'data_dir', lambda: tmp_path)
+    safe_report = {
+        'schema': 1,
+        'read_only': True,
+        'controls': [
+            {'name': 'Home', 'automation_id': '', 'class': 'LandmarkTarget'},
+            {'name': 'Search', 'automation_id': 'TextBox', 'class': 'TextBox'},
+            {'name': '', 'automation_id': '', 'class': 'AutoSuggestBox'},
+            {'name': 'Queue', 'automation_id': 'PlayQueueToggleButton',
+             'class': 'ToggleButton'},
+        ],
+    }
+    monkeypatch.setattr(diagnostics, 'inspect_window',
+                        lambda adapter: dict(safe_report))
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    saved = adapter._capture_failed_search(object(), 'autosuggest-invoke')
+    assert 'spindle-search-failure-' in saved
+    reports = list((tmp_path / 'diagnostics').glob('spindle-search-failure-*.json'))
+    assert len(reports) == 1
+    contents = json.loads(reports[0].read_text(encoding='utf-8'))
+    state = contents['failure_context']
+    assert state['search_text_box_exposed']
+    assert state['autosuggest_box_exposed']
+    assert state['home_page_exposed']
+    assert not state['query_button_exposed']
+    assert not state['songs_section_exposed']
+    assert state['no_query_or_track_details_saved']
+    assert 'Beyoncé' not in repr(contents)
+    assert 'needy' not in repr(contents)
+    # Frequent automatic retries must not create diagnostic-file storms.
+    assert adapter._capture_failed_search(object(), 'targeted-enter') == ''
+    assert len(list((tmp_path / 'diagnostics').glob('*.json'))) == 1
+
+
+def test_failed_search_diagnostics_cannot_interrupt_delivery(monkeypatch):
+    from spindle.native_queue import WindowsQueueUIA
+    from spindle import diagnostics
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    def fail(*args, **kwargs):
+        raise RuntimeError('Accessibility tree unavailable')
+    monkeypatch.setattr(diagnostics, 'inspect_window', fail)
+    assert adapter._capture_failed_search(object(), 'targeted-enter') == ''
