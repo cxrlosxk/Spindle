@@ -516,36 +516,60 @@ class WindowsQueueUIA:
         return rows
 
     def _target_row(self, window, track):
-        # Search may contain multiple recordings/editions. Do not assume first result.
-        rows = self._search_results(window, track)
-        matched = []
-        for row in rows:
-            texts = self._row_texts(row)
-            if len(texts) >= 2 and strict_track_match(texts[0], texts[1], track):
-                matched.append(row)
+        # Only real, visible WinUI rows can be acted on. Apple Music frequently
+        # retains several virtualized copies of a search result at (0, 0).
+        self._selection_note = ''
+        matched = self._matching_song_rows(self._search_results(window, track), track)
         if not matched:
-            raise NativeQueueError('Apple Music search could not verify the exact title and artist; request kept in Spindle.')
-        if len(matched) > 1:
-            # Prefer an exact album match only when it unambiguously identifies
-            # one result; never randomly pick an alternative recording/reissue.
+            raise NativeQueueError(
+                'No visible result with the requested title and artist. '
+                'The Songs section may not have loaded yet.'
+            )
+        if len(matched) == 1:
+            return matched[0]
+
+        # Album metadata is not always exposed in the Songs ListView, but when
+        # it is available, require an exact album match over a generic hit.
+        if track.album:
             album_matches = []
-            if track.album:
-                for row in matched:
-                    texts = self._row_texts(row)
-                    if len(texts) >= 3 and norm(texts[2]) == norm(track.album):
-                        album_matches.append(row)
+            for row in matched:
+                text = self._row_texts(row)
+                if any(norm(value) == norm(track.album) for value in text[2:]):
+                    album_matches.append(row)
             if len(album_matches) == 1:
                 return album_matches[0]
-            raise NativeQueueError('Multiple versions match this song. Open the Apple Music link to choose a version.')
+
+        # Multiple editions often share the exact artist/title, while the
+        # accessibility tree omits their album IDs. For a plain song request,
+        # use Apple's leading *visible* exact-title-and-artist result. We do
+        # not assert that the specific release/album was verified.
+        self._selection_note = (
+            'The title and artist matched, but Apple Music did not expose '
+            'enough metadata to confirm the album or recording edition.'
+        )
         return matched[0]
 
     def _open_more(self, row):
         buttons = self._all(row, kind=self.types.ButtonControl)
         if not buttons:
             raise NativeQueueError('Apple Music did not expose a More (…) button for this song.')
-        named = [b for b in buttons if 'more' in (b.CurrentName or '').lower()]
-        target = named[0] if named else buttons[-1]
-        self._invoke(target)
+        named = []
+        for button in buttons:
+            try:
+                identity = (button.CurrentName or '').casefold()
+                aid = (button.CurrentAutomationId or '').casefold()
+            except Exception:
+                continue
+            if self._usable_result(button) and (
+                'more' in identity or aid == 'morebutton'
+            ):
+                named.append(button)
+        if len(named) != 1:
+            raise NativeQueueError(
+                'Apple Music did not expose one identifiable, visible '
+                'song-specific More button. No other button was pressed.'
+            )
+        self._invoke(named[0])
 
     def _visible_menu_items(self, window):
         """Find context menus that WinUI may host outside the music window.
@@ -626,7 +650,11 @@ class WindowsQueueUIA:
                 time.sleep(0.28)
                 current = self._queue_snapshot(window)
                 if observed_increment(before, current, track):
-                    return Delivery(True, 'Verified in Apple Music Playing Next.')
+                    return Delivery(
+                        True,
+                        'Verified title and artist in Apple Music Playing Next.'
+                        + (' ' + self._selection_note if self._selection_note else ''),
+                    )
             return Delivery(
                 False, 'Apple Music did not show the new song in Playing Next.'
             )
