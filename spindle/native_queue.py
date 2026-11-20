@@ -390,14 +390,50 @@ class WindowsQueueUIA:
                     continue
         return candidates
 
+    def _focused_open_search(self):
+        """Opt-in Apple Music access key Alt, N, F (documented by Apple).
+
+        Only uses system keys after verifying Apple Music is the foreground
+        process. Restores the previous foreground window immediately after.
+        This may briefly interrupt a full-screen game: default is disabled.
+        """
+        if not getattr(self, 'allow_focus_handoff', False):
+            return False
+        hwnd = getattr(self, '_hwnd', None)
+        if hwnd is None or not self.user32.IsWindow(hwnd):
+            return False
+        u = self.user32
+        previous = u.GetForegroundWindow()
+        try:
+            if previous != hwnd:
+                u.SetForegroundWindow(hwnd)
+                if not self._wait(lambda: u.GetForegroundWindow() == hwnd, 0.7, 0.07):
+                    return False
+            for vk in (0x12, 0x4E, 0x46):  # Alt, N, F in sequence.
+                if u.GetForegroundWindow() != hwnd:
+                    return False
+                u.keybd_event(vk, 0, 0, 0)
+                u.keybd_event(vk, 0, 0x0002, 0)
+                time.sleep(0.06)
+            return True
+        finally:
+            if previous and previous != hwnd and u.IsWindow(previous):
+                u.SetForegroundWindow(previous)
+
     def _open_compact_search(self, window):
         """Reveal the hidden search box using UIA, without typing or clicking."""
         candidates = self._search_entry_candidates(window)
         if not candidates:
+            if self._focused_open_search():
+                box = self._wait(
+                    lambda: self._visible_search_field(window), 4.0, 0.15,
+                )
+                if box is not None:
+                    return box
             raise NativeQueueError(
-                'Apple Music is using compact navigation, but its Search icon '
-                'was not identifiable. Select the magnifying-glass icon in '
-                'Apple Music once, then retry Queue.'
+                'Apple Music compact Search is not accessible in the background. '
+                'Enable the optional brief-focus fallback in Settings to use '
+                'Apple Music’s Alt, N, F search shortcut automatically.'
             )
         # Prefer an explicitly named button to a surrounding navigation item.
         ranked = sorted(candidates, key=lambda e: (
@@ -446,9 +482,15 @@ class WindowsQueueUIA:
             )
         box = self._wait(lambda: self._visible_search_field(window), 4.0, 0.15)
         if box is None:
+            if self._focused_open_search():
+                box = self._wait(
+                    lambda: self._visible_search_field(window), 4.0, 0.15,
+                )
+        if box is None:
             raise NativeQueueError(
                 'Apple Music Search navigation was selected, but no search '
-                'field appeared. Open Search manually and retry Queue.'
+                'field appeared. Enable the optional brief-focus search '
+                'fallback in Settings if background opening is unsupported.'
             )
         return box
 
