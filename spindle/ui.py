@@ -186,11 +186,17 @@ class SettingsDialog(QDialog):
         )
         self.native_queue_enabled.setChecked(settings.native_queue_enabled)
         outer.addWidget(self.native_queue_enabled)
+        self.allow_focus_handoff = QCheckBox(
+            'If background search is blocked, briefly focus Apple Music to submit it'
+        )
+        self.allow_focus_handoff.setChecked(settings.allow_focus_handoff)
+        outer.addWidget(self.allow_focus_handoff)
         caution = label(
             'Spindle automatically processes pending requests in order and retries '
             'transient failures. Songs are marked as added only after Apple Music '
             'confirms them. This uses experimental Windows UI automation and may '
-            'briefly restore Apple Music when it was minimized.',
+            'briefly restore Apple Music when it was minimized. The optional '
+            'focus handoff can momentarily interrupt a full-screen game.',
             'muted', True,
         )
         outer.addWidget(caution)
@@ -211,6 +217,7 @@ class SettingsDialog(QDialog):
         self.settings.max_duration_minutes = self.duration.value()
         self.settings.requests_enabled = self.enabled.isChecked()
         self.settings.native_queue_enabled = self.native_queue_enabled.isChecked()
+        self.settings.allow_focus_handoff = self.allow_focus_handoff.isChecked()
         self.settings.save()
         super().accept()
 
@@ -225,6 +232,7 @@ class SpindleWindow(QMainWindow):
         self.settings = Settings.load()
         self.store = QueueStore(data_dir() / 'requests.db')
         self.native_queue = NativeQueueBridge()
+        self.native_queue.allow_focus_handoff = self.settings.allow_focus_handoff
         self.syncing_ids: set[int] = set()
         self.sync_lock = threading.Lock()
         self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
@@ -575,6 +583,7 @@ class SpindleWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
+            self.native_queue.allow_focus_handoff = self.settings.allow_focus_handoff
             self.auto_queue.wake()
             self.log(
                 'Automatic Apple Music requests '
