@@ -64,6 +64,7 @@ class WindowsQueueUIA:
         self._condition_all = self.api.CreateTrueCondition()
         self._hwnd = None
         self._temporarily_restored_hwnd = None
+        self.allow_focus_handoff = False
 
     def _finish_window(self):
         """Return Apple Music to its minimized state without activation."""
@@ -509,6 +510,39 @@ class WindowsQueueUIA:
                 matches.append(row)
         return matches
 
+    def _focused_return_only_if_explicitly_allowed(self, search):
+        """Last-resort real Enter for WinUI when no accessibility submit exists.
+
+        Windows does not offer an accessible QuerySubmitted operation. This
+        optional mode briefly activates Apple Music; users should leave it
+        disabled when even a momentary game-focus interruption is unacceptable.
+        No keys are sent unless Apple Music is verified as the foreground app.
+        """
+        if not getattr(self, 'allow_focus_handoff', False):
+            return False
+        hwnd = getattr(self, '_hwnd', None)
+        if hwnd is None or not self.user32.IsWindow(hwnd):
+            return False
+        u = self.user32
+        previous = u.GetForegroundWindow()
+        try:
+            if previous != hwnd:
+                u.SetForegroundWindow(hwnd)
+                if not self._wait(lambda: u.GetForegroundWindow() == hwnd, 0.6, 0.06):
+                    return False
+            try:
+                search.SetFocus()  # IUIAutomationElement: exact Apple search edit
+            except Exception:
+                return False
+            if u.GetForegroundWindow() != hwnd:
+                return False
+            u.keybd_event(0x0D, 0, 0, 0)
+            u.keybd_event(0x0D, 0, 0x0002, 0)
+            return True
+        finally:
+            if previous and previous != hwnd and u.IsWindow(previous):
+                u.SetForegroundWindow(previous)
+
     def _post_music_return(self):
         """Best-effort Enter delivered only to Apple Music's own window.
 
@@ -639,13 +673,24 @@ class WindowsQueueUIA:
                 # UIA references commonly go stale as WinUI replaces its page.
                 return None
 
-        rows = self._wait(find_new_page, 10.0, 0.2)
+        rows = self._wait(
+            find_new_page, 2.5 if getattr(self, 'allow_focus_handoff', False)
+            else 10.0, 0.2,
+        )
         if rows:
             return rows
+        if self._focused_return_only_if_explicitly_allowed(search):
+            # This is opt-in because the OS must briefly focus Apple Music.
+            rows = self._wait(find_new_page, 8.0, 0.2)
+            if rows:
+                return rows
+            submission += '+focused-enter'
         raise NativeQueueError(
             'Apple Music did not show a newly submitted full search-results '
             'page after ' + submission + '. Spindle will not use old results '
-            'or the four-item suggestion dropdown.'
+            'or the four-item suggestion dropdown. If background submission '
+            'is unsupported on this Apple Music build, Settings offers an '
+            'optional brief-focus fallback.'
         )
 
     def _open_all_songs(self, window):
@@ -886,8 +931,9 @@ class WindowsQueueUIA:
 
 class NativeQueueBridge:
     """Serializes all native UIA calls to one COM-initialized, daemon thread."""
-    def __init__(self, backend_factory=None, timeout=35.0):
+    def __init__(self, backend_factory=None, timeout=65.0):
         self.backend_factory = backend_factory
+        self.allow_focus_handoff = False
         self.timeout = timeout
         self.tasks = queue.Queue()
         self.worker = None
@@ -921,6 +967,8 @@ class NativeQueueBridge:
                     if is_probe:
                         result = backend.inspect_diagnostics()
                     else:
+                        if self.backend_factory is None:
+                            backend.allow_focus_handoff = self.allow_focus_handoff
                         result = backend.deliver(track, first_request=first_request)
                     if not future.cancelled():
                         future.set_result(result)
