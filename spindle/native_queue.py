@@ -243,26 +243,146 @@ class WindowsQueueUIA:
                 except Exception:
                     pass
 
+    def _search_entry_candidates(self, window):
+        """Locate the collapsed sidebar's Search item by accessible identity.
+
+        Narrow Apple Music windows replace the search box with a magnifier
+        icon. We only operate on a named search navigation control, never on
+        an arbitrary icon or an unrelated search result.
+        """
+        candidates = []
+        for kind in (self.types.ButtonControl, self.types.ListItemControl,
+                     self.types.TabItemControl):
+            for element in self._all(window, kind=kind):
+                try:
+                    name = (element.CurrentName or '').strip().casefold()
+                    aid = (element.CurrentAutomationId or '').strip().casefold()
+                    if element.CurrentIsOffscreen:
+                        continue
+                except Exception:
+                    continue
+                if (name == 'search' or name in ('search apple music', 'search music')
+                        or aid in ('searchbutton', 'searchnavitem',
+                                   'searchnavigationitem', 'navviewsearchbutton')):
+                    candidates.append(element)
+        return candidates
+
+    def _open_compact_search(self, window):
+        """Reveal the hidden search box using UIA, without typing or clicking."""
+        candidates = self._search_entry_candidates(window)
+        if not candidates:
+            raise NativeQueueError(
+                'Apple Music is using compact navigation, but its Search icon '
+                'was not identifiable. Select the magnifying-glass icon in '
+                'Apple Music once, then retry Queue.'
+            )
+        # Prefer an explicitly named button to a surrounding navigation item.
+        ranked = sorted(candidates, key=lambda e: (
+            0 if e.CurrentName.strip().casefold() == 'search' else 1,
+            0 if e.CurrentControlType == self.types.ButtonControl else 1,
+        ))
+        top = ranked[0]
+        top_rank = (
+            top.CurrentName.strip().casefold() == 'search',
+            top.CurrentControlType == self.types.ButtonControl,
+        )
+        if len(ranked) > 1:
+            next_rank = (
+                ranked[1].CurrentName.strip().casefold() == 'search',
+                ranked[1].CurrentControlType == self.types.ButtonControl,
+            )
+            if next_rank == top_rank:
+                raise NativeQueueError(
+                    'Apple Music exposes multiple Search controls; '
+                    'select its magnifying-glass icon manually and retry.'
+                )
+        control = self._control(top)
+        errors = []
+        for pattern_name, method in (
+            ('invoke', 'GetInvokePattern'),
+            ('select', 'GetSelectionItemPattern'),
+            ('legacy', 'GetLegacyIAccessiblePattern'),
+        ):
+            try:
+                pattern = getattr(control, method)()
+                if pattern is None:
+                    continue
+                if pattern_name == 'invoke':
+                    pattern.Invoke(waitTime=0)
+                elif pattern_name == 'select':
+                    pattern.Select(waitTime=0)
+                else:
+                    pattern.DoDefaultAction(waitTime=0)
+                break
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+        else:
+            raise NativeQueueError(
+                'Apple Music Search navigation cannot be activated through '
+                'Windows accessibility (' + ','.join(errors[:2]) + ').'
+            )
+        box = self._wait(
+            lambda: self._find(window, aid='TextBox', kind=self.types.EditControl),
+            4.0, 0.15,
+        )
+        if box is None:
+            raise NativeQueueError(
+                'Apple Music Search navigation was selected, but no search '
+                'field appeared. Open Search manually and retry Queue.'
+            )
+        return box
+
     def _search_results(self, window, track: Track):
         search = self._find(window, aid='TextBox', kind=self.types.EditControl)
-        submit = self._find(window, aid='QueryButton', kind=self.types.ButtonControl)
-        if not search or not submit:
-            raise NativeQueueError('Apple Music search UI is unavailable or has changed.')
+        if search is None:
+            search = self._open_compact_search(window)
         value = self._control(search).GetValuePattern()
         if not value:
-            raise NativeQueueError('Apple Music search does not accept accessibility text input.')
-        # SetValue/Invoke do not use the keyboard or mouse.
+            raise NativeQueueError(
+                'Apple Music search field does not accept accessibility text input.'
+            )
+        stale_content = self._find(window, name='Content', kind=self.types.GroupControl)
+        stale_section = self._find(stale_content, name='Songs',
+                                   kind=self.types.ListItemControl)
+        try:
+            old_id = stale_section.GetRuntimeId() if stale_section else None
+        except Exception:
+            old_id = None
+        # UIA ValuePattern avoids typing into the streamer's active game.
         value.SetValue(f'{track.title} {track.artist}', waitTime=0)
-        self._invoke(submit)
+        submit = self._find(window, aid='QueryButton', kind=self.types.ButtonControl)
+        if submit is None:
+            submit = self._wait(
+                lambda: self._find(window, aid='QueryButton',
+                                   kind=self.types.ButtonControl),
+                1.5, 0.12,
+            )
+        if submit is not None:
+            self._invoke(submit)
+        # Some Apple Music builds submit AutoSuggestBox input automatically.
+        # In either case, confirm the results have had a chance to change.
+        started = time.monotonic()
+
         def find_rows():
             content = self._find(window, name='Content', kind=self.types.GroupControl)
             songs = self._find(content, name='Songs', kind=self.types.ListItemControl)
-            if not songs:
+            if songs is None:
                 return None
-            return self._rows(songs)
-        rows = self._wait(find_rows, 8, 0.2)
+            if old_id is not None:
+                try:
+                    if songs.GetRuntimeId() == old_id and time.monotonic() - started < 1.6:
+                        return None
+                except Exception:
+                    pass
+            rows = self._rows(songs)
+            return rows if rows else None
+
+        rows = self._wait(find_rows, 9.0, 0.2)
         if rows is None:
-            raise NativeQueueError('Apple Music search produced no Songs section.')
+            raise NativeQueueError(
+                'Apple Music search returned no accessible song results. '
+                'Try opening Search manually and retry.'
+            )
         return rows
 
     def _target_row(self, window, track):
