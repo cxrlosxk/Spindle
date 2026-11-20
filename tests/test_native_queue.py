@@ -605,3 +605,87 @@ def test_compact_search_uses_observed_autosuggestbox_when_icon_unlabeled():
     adapter._wait = lambda fn, *args, **kw: fn()
     assert adapter._open_compact_search(object()) is box
     assert state['opened']
+
+
+def test_exact_query_button_is_invoked_even_when_visual_bounds_hidden():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    button = SimpleNamespace(CurrentAutomationId='QueryButton')
+    adapter._all = lambda window, **kw: (
+        [button] if kw.get('aid') == 'QueryButton' else []
+    )
+    called = []
+    adapter._invoke = lambda item: called.append(item)
+    adapter._post_music_return = lambda: pytest.fail('No background Enter needed')
+    assert adapter._submit_search(object()) == 'query-button'
+    assert called == [button]
+
+
+def test_stale_page_from_previous_search_must_not_queue_a_song():
+    from spindle.native_queue import WindowsQueueUIA, NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._visible_search_field = lambda window: object()
+    adapter._search_page_state = lambda window: (
+        (1, 9), 'Previous search result', (('9 to 5', 'Dolly Parton'),),
+    )
+    adapter._set_search_text = lambda search, query: None
+    adapter._submit_search = lambda window: 'query-button'
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    adapter.allow_focus_handoff = False
+    adapter._focused_return_only_if_explicitly_allowed = lambda search: False
+    with pytest.raises(NativeQueueError, match='newly submitted full search-results'):
+        adapter._search_results(object(), Track('9 to 5', 'Dolly Parton'))
+
+
+def test_focus_handoff_refuses_to_send_key_if_music_cannot_take_foreground():
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.allow_focus_handoff = True
+    adapter._hwnd = 123
+    events = []
+    foreground = 99
+    adapter.user32 = SimpleNamespace(
+        IsWindow=lambda h: True,
+        GetForegroundWindow=lambda: foreground,
+        SetForegroundWindow=lambda h: events.append(('focus', h)) or False,
+        keybd_event=lambda *args: pytest.fail('Must never inject Enter into a game'),
+    )
+    adapter._wait = lambda fn, *a, **kw: fn()
+    assert not adapter._focused_return_only_if_explicitly_allowed(object())
+    assert events == [('focus', 123), ('focus', 99)]
+
+
+def test_focus_handoff_is_opt_in_even_when_apple_music_is_visible():
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.allow_focus_handoff = False
+    assert not adapter._focused_return_only_if_explicitly_allowed(object())
+
+
+def test_first_song_uses_add_to_queue_if_play_next_is_missing():
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    item = SimpleNamespace(CurrentName='Add to Queue')
+    adapter._visible_menu_items = lambda window: [item]
+    invoked = []
+    adapter._invoke = lambda control: invoked.append(control)
+    adapter._select_queue_action(object(), first_request=True)
+    assert invoked == [item]
+
+
+def test_offered_play_next_is_preferred_over_add_to_queue():
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    add = SimpleNamespace(CurrentName='Add to Queue')
+    next_song = SimpleNamespace(CurrentName='Play Next')
+    adapter._visible_menu_items = lambda window: [add, next_song]
+    invoked = []
+    adapter._invoke = lambda control: invoked.append(control)
+    adapter._select_queue_action(object(), first_request=True)
+    assert invoked == [next_song]
