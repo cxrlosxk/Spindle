@@ -36,6 +36,38 @@ class QueueStore:
             rows = self.conn.execute("SELECT * FROM song_requests WHERE status='pending' ORDER BY id ASC").fetchall()
             return [Request(**dict(row)) for row in rows]
 
+    def verifying(self) -> list[Request]:
+        """Requests whose insert outcome may already have affected Apple Music.
+
+        These are NEVER silently resubmitted. On restart, Spindle first checks
+        Apple Music's real queue before deciding whether they were delivered.
+        """
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM song_requests WHERE status='verifying' ORDER BY id ASC"
+            ).fetchall()
+            return [Request(**dict(row)) for row in rows]
+
+    def begin_delivery(self, request_id: int) -> bool:
+        """Persist the in-flight state BEFORE invoking an external queue action."""
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE song_requests SET status='verifying' "
+                "WHERE id=? AND status='pending'", (request_id,),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def release_unsubmitted(self, request_id: int) -> bool:
+        """Only for explicit no-action failures (e.g. focus protection)."""
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE song_requests SET status='pending' "
+                "WHERE id=? AND status='verifying'", (request_id,),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
     def queued(self) -> list[Request]:
         with self.lock:
             rows = self.conn.execute("SELECT * FROM song_requests WHERE status='queued' ORDER BY id ASC").fetchall()
@@ -43,12 +75,18 @@ class QueueStore:
 
     def active(self) -> list[Request]:
         with self.lock:
-            rows = self.conn.execute("SELECT * FROM song_requests WHERE status IN ('pending','queued') ORDER BY id ASC").fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM song_requests "
+                "WHERE status IN ('pending','verifying','queued') ORDER BY id ASC"
+            ).fetchall()
             return [Request(**dict(row)) for row in rows]
 
     def mark_queued(self, request_id: int) -> bool:
         with self.lock:
-            cur = self.conn.execute("UPDATE song_requests SET status='queued' WHERE id=? AND status='pending'", (request_id,))
+            cur = self.conn.execute(
+                "UPDATE song_requests SET status='queued' "
+                "WHERE id=? AND status IN ('pending','verifying')", (request_id,)
+            )
             self.conn.commit()
             return cur.rowcount > 0
 
@@ -92,8 +130,11 @@ class QueueStore:
         if status not in ('played', 'removed'):
             raise ValueError('invalid request status')
         with self.lock:
-            cursor = self.conn.execute("UPDATE song_requests SET status=? WHERE id=? AND status IN ('pending','queued')",
-                                       (status, request_id))
+            cursor = self.conn.execute(
+                "UPDATE song_requests SET status=? WHERE id=? "
+                "AND status IN ('pending','verifying','queued')",
+                (status, request_id),
+            )
             self.conn.commit()
             return cursor.rowcount > 0
 
