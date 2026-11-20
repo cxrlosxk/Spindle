@@ -1167,6 +1167,10 @@ class WindowsQueueUIA:
             raise NativeQueueError(
                 f'No unambiguous {action} menu item; no playback action selected.'
             )
+        # The action becomes uncertain only once we actually attempt its
+        # Invoke. An absent menu item is a proven pre-insertion failure and
+        # should be retried normally rather than becoming stuck in Verifying.
+        self._queue_action_requested = True
         self._invoke(target)
 
     def _capture_failed_queue(self, window):
@@ -1241,6 +1245,7 @@ class WindowsQueueUIA:
             stage = 'open song More menu'
             self._open_more(row)
             stage = 'choose Play Next or Play Last'
+            self._queue_action_requested = False
             self._select_queue_action(window, first_request)
             stage = 'verify Playing Next after insertion'
             # Invoking an accessible menu isn't proof. Require a new,
@@ -1273,8 +1278,12 @@ class WindowsQueueUIA:
                 trace = self._capture_failed_queue(locals().get('window'))
             message = ((trace.strip() + ' | ' if trace else '')
                        + f'{stage}: {type(exc).__name__}: {str(exc)[:170]}')
-            if stage in ('choose Play Next or Play Last',
-                         'verify Playing Next after insertion'):
+            uncertain_action = (
+                stage == 'verify Playing Next after insertion'
+                or (stage == 'choose Play Next or Play Last'
+                    and getattr(self, '_queue_action_requested', False))
+            )
+            if uncertain_action:
                 # The menu action may have reached Music before an exception.
                 # Never convert this uncertain outcome into another Add.
                 return Delivery(False, message, uncertain=True)
