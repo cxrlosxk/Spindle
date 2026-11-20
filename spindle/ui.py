@@ -281,8 +281,14 @@ class SpindleWindow(QMainWindow):
         left_col.addWidget(self.queue_scroll, 1)
         content.addWidget(left, 5)
 
-        right = QVBoxLayout(); right.setSpacing(16)
-        request_card = QFrame(); request_card.setObjectName('card'); right_col = layout_column(request_card, 22, 12)
+        # Scroll the entire sidebar; a short viewport must not clip card text.
+        right_container = QWidget()
+        right_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        right = QVBoxLayout(right_container); right.setSpacing(16)
+        right.setContentsMargins(0, 0, 10, 0)
+        request_card = QFrame(); request_card.setObjectName('card'); request_card.setMinimumHeight(176)
+        request_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        right_col = layout_column(request_card, 22, 12)
         right_col.addWidget(label('Find a song', 'section'))
         right_col.addWidget(label('Try a request locally, or let viewers use !sr in chat.', 'muted', True))
         input_row = QHBoxLayout(); input_row.setSpacing(8)
@@ -296,7 +302,9 @@ class SpindleWindow(QMainWindow):
         right_col.addWidget(self.local_feedback)
         right.addWidget(request_card)
 
-        commands_card = QFrame(); commands_card.setObjectName('card'); cmds = layout_column(commands_card, 21, 11)
+        commands_card = QFrame(); commands_card.setObjectName('card'); commands_card.setMinimumHeight(226)
+        commands_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        cmds = layout_column(commands_card, 21, 11)
         cmds.addWidget(label('Chat commands', 'section'))
         for cmd, meaning in [('!song', 'What’s playing now'), ('!sr AMEN Beyoncé', 'Request a track'),
                              ('!queue', 'Show pending songs'), ('!unrequest', 'Cancel your latest request')]:
@@ -305,13 +313,21 @@ class SpindleWindow(QMainWindow):
         more = label('Moderators: !sr on/off · !remove 2', 'muted'); cmds.addWidget(more)
         right.addWidget(commands_card)
 
-        activity_card = QFrame(); activity_card.setObjectName('card'); a_col = layout_column(activity_card, 21, 10)
+        activity_card = QFrame(); activity_card.setObjectName('card'); activity_card.setMinimumHeight(220)
+        a_col = layout_column(activity_card, 21, 10)
         a_col.addWidget(label('Activity', 'section'))
         self.activity_label = label('Your recent activity will appear here.', 'muted', True)
         self.activity_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         a_col.addWidget(self.activity_label, 1)
-        right.addWidget(activity_card, 1)
-        content.addLayout(right, 4)
+        right.addWidget(activity_card)
+        right.addStretch(1)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        right_scroll.setWidget(right_container)
+        right_scroll.setMinimumWidth(340)
+        content.addWidget(right_scroll, 4)
         page.addLayout(content, 1)
 
         footer = QHBoxLayout()
