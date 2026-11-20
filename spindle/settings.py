@@ -21,7 +21,8 @@ class Settings:
     cooldown_seconds: int = 90
     max_duration_minutes: int = 12
     allow_explicit: bool = True
-    native_queue_enabled: bool = False  # Explicit opt-in until tested on Apple Music for Windows.
+    native_queue_enabled: bool = True  # Automatic song requests, switchable in Settings.
+    auto_queue_v2_initialized: bool = True
 
     @classmethod
     def load(cls, directory: Path | None = None) -> 'Settings':
@@ -31,6 +32,16 @@ class Settings:
         try:
             raw = json.loads(path.read_text(encoding='utf-8'))
             filtered = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+            # One-time upgrade for the new unattended-request workflow.
+            # The previous version initialized native queue sync as off
+            # by default. This release's primary feature is automatic
+            # delivery; after migration the user's Settings choice persists.
+            if 'auto_queue_v2_initialized' not in raw:
+                filtered['native_queue_enabled'] = True
+                filtered['auto_queue_v2_initialized'] = True
+                settings = cls(**filtered)
+                settings.save(directory)
+                return settings
             return cls(**filtered)
         except (OSError, ValueError, TypeError):
             return cls()
