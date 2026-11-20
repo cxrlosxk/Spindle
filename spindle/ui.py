@@ -612,7 +612,7 @@ class SpindleWindow(QMainWindow):
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
             self.native_queue.allow_focus_handoff = self.settings.effective_focus_handoff
-        self.native_queue.protect_foreground = self.settings.protect_foreground
+            self.native_queue.protect_foreground = self.settings.protect_foreground
             self.auto_queue.wake()
             self.log(
                 'Automatic Apple Music requests '
