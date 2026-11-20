@@ -61,6 +61,23 @@ class WindowsQueueUIA:
         self.props = uiautomation.PropertyId
         self.api = _uia._AutomationClient.instance().IUIAutomation
         self.user32 = ctypes.windll.user32
+        # ctypes defaults Win32 return values/arguments to 32-bit integers.
+        # HWNDs are pointer-sized: without these prototypes, foreground
+        # checks and nonactivating restore can misbehave on 64-bit Windows.
+        u = self.user32
+        u.GetForegroundWindow.restype = wintypes.HWND
+        u.SetForegroundWindow.argtypes = [wintypes.HWND]
+        u.SetForegroundWindow.restype = wintypes.BOOL
+        u.IsWindow.argtypes = [wintypes.HWND]
+        u.IsWindow.restype = wintypes.BOOL
+        u.IsIconic.argtypes = [wintypes.HWND]
+        u.IsIconic.restype = wintypes.BOOL
+        u.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.ShowWindowAsync.restype = wintypes.BOOL
+        u.PostMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        ]
+        u.PostMessageW.restype = wintypes.BOOL
         self._condition_all = self.api.CreateTrueCondition()
         self._hwnd = None
         self._temporarily_restored_hwnd = None
