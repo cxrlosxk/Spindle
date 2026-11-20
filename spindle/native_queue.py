@@ -152,6 +152,14 @@ class WindowsQueueUIA:
                 return lst
         return None
 
+    def _press_queue_toggle(self, element):
+        control = self._control(element)
+        # Apple Music sometimes exposes TogglePattern without InvokePattern.
+        if control.GetPattern(10015):
+            control.GetTogglePattern().Toggle(waitTime=0)
+        else:
+            self._invoke(element)
+
     def _queue_snapshot(self, window) -> list[tuple[str, str]]:
         toggle = self._find(window, aid='PlayQueueToggleButton', kind=self.types.ButtonControl)
         panel = self._playing_next(window)
@@ -159,7 +167,7 @@ class WindowsQueueUIA:
         if panel is None:
             if toggle is None:
                 raise NativeQueueError('Apple Music Playing Next button was not found.')
-            self._invoke(toggle)
+            self._press_queue_toggle(toggle)
             opened = True
             panel = self._wait(lambda: self._playing_next(window), 3)
             if panel is None:
@@ -176,7 +184,7 @@ class WindowsQueueUIA:
         finally:
             if opened:
                 try:
-                    self._invoke(toggle)
+                    self._press_queue_toggle(toggle)
                 except Exception:
                     pass
 
