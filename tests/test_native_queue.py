@@ -228,6 +228,7 @@ def _compact_search_fixture():
 
     adapter._all = lambda root, **kw: (
         [box] if kw.get('aid') == 'TextBox' and state['opened'] else
+        [] if kw.get('aid') == 'QueryButton' else
         [icon] if kw.get('kind') == 'button' else []
     )
     def find(root, **kw):
