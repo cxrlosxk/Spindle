@@ -889,3 +889,129 @@ def test_failed_search_diagnostics_cannot_interrupt_delivery(monkeypatch):
         raise RuntimeError('Accessibility tree unavailable')
     monkeypatch.setattr(diagnostics, 'inspect_window', fail)
     assert adapter._capture_failed_search(object(), 'targeted-enter') == ''
+
+
+def test_real_compact_search_button_from_november_20_capture():
+    """Captured WinUI Search_Button is unnamed but has an Invoke pattern."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(
+        ButtonControl='button', ListItemControl='list', TabItemControl='tab',
+        GroupControl='group',
+    )
+    search_icon = SimpleNamespace(
+        CurrentName='', CurrentAutomationId='Search_Button',
+        CurrentIsOffscreen=False, CurrentControlType='button',
+        CurrentBoundingRectangle=SimpleNamespace(
+            left=-2781, right=-2721, top=928, bottom=982,
+        ),
+    )
+    adapter._all = lambda root, **kw: (
+        [search_icon] if kw.get('kind') == 'button' else []
+    )
+    assert adapter._search_entry_candidates(object()) == [search_icon]
+    state = {'activated': False}
+    class Invoke:
+        def Invoke(self, **kwargs):
+            state['activated'] = True
+    class Control:
+        def GetInvokePattern(self):
+            return Invoke()
+    adapter._control = lambda element: Control()
+    field = object()
+    adapter._visible_search_field = lambda window: (
+        field if state['activated'] else None
+    )
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    assert adapter._open_compact_search(object()) is field
+    assert state['activated']
+
+
+def test_transient_null_com_pointer_retries_automation_query():
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._cond = lambda **kw: 'match'
+    adapter._rebind_root = lambda root: root
+    class Elements:
+        Length = 1
+        def GetElement(self, index):
+            return 'search-control'
+    class Root:
+        times = 0
+        def FindAll(self, scope, condition):
+            self.times += 1
+            if self.times == 1:
+                raise ValueError('NULL COM pointer access')
+            return Elements()
+    root = Root()
+    assert adapter._all(root, aid='Search_Button') == ['search-control']
+    assert root.times == 2
+
+
+def test_queue_artist_album_caption_matches_only_exact_artist():
+    from spindle.native_queue import queue_track_match, observed_increment
+    requested = Track('needy', 'Ariana Grande', 'thank u, next')
+    assert queue_track_match('needy', 'Ariana Grande — thank u, next', requested)
+    assert queue_track_match('needy', 'Ariana Grande – thank u, next', requested)
+    assert not queue_track_match('needy', 'Ariana Grande Tribute — Hits', requested)
+    assert not queue_track_match('needy (live)', 'Ariana Grande — thank u, next', requested)
+    assert observed_increment(
+        [], [('needy', 'Ariana Grande — thank u, next')], requested,
+    )
+
+
+def test_verified_native_queue_uses_artist_album_display_caption():
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    target = Track('needy', 'Ariana Grande', 'thank u, next')
+    adapter._find_window = lambda: object()
+    states = iter([[], [('needy', 'Ariana Grande — thank u, next')]])
+    adapter._queue_snapshot = lambda win: next(states)
+    adapter._target_row = lambda *a: object()
+    adapter._open_more = lambda *a: None
+    adapter._select_queue_action = lambda *a, **k: None
+    adapter._finish_window = lambda: None
+    adapter._selection_note = ''
+    assert adapter.deliver(target, first_request=True).verified
+
+
+def test_retry_does_not_duplicate_artist_album_queue_row():
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._find_window = lambda: object()
+    adapter._queue_snapshot = lambda window: [
+        ('needy', 'Ariana Grande — thank u, next'),
+    ]
+    adapter._target_row = lambda *a: pytest.fail('Duplicate should be skipped')
+    adapter._finish_window = lambda: None
+    result = adapter.deliver(Track('needy', 'Ariana Grande'), first_request=True)
+    assert result.verified
+    assert 'no duplicate' in result.reason
+
+
+def test_queue_failure_snapshot_is_redacted_and_rate_limited(tmp_path, monkeypatch):
+    import json
+    from spindle.native_queue import WindowsQueueUIA
+    from spindle import diagnostics, settings
+    monkeypatch.setattr(settings, 'data_dir', lambda: tmp_path)
+    monkeypatch.setattr(diagnostics, 'inspect_window', lambda adapter: {
+        'read_only': True,
+        'controls': [
+            {'name': 'Queue', 'automation_id': 'PlayQueueToggleButton'},
+            {'name': 'Playing Next', 'automation_id': ''},
+            {'name': '[redacted]', 'automation_id': 'PlayQueueListView1'},
+        ],
+    })
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    message = adapter._capture_failed_queue(object())
+    assert 'spindle-queue-failure-' in message
+    report_path = next((tmp_path / 'diagnostics').glob('spindle-queue-failure-*.json'))
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    context = report['failure_context']
+    assert context['playing_next_label_exposed']
+    assert context['queue_candidate_control_ids'] == [
+        'PlayQueueListView1', 'PlayQueueToggleButton',
+    ]
+    assert context['no_song_or_account_details_saved']
+    assert adapter._capture_failed_queue(object()) == ''
