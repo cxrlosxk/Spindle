@@ -593,11 +593,11 @@ class WindowsQueueUIA:
             texts = ()
         return runtime, status_name, texts
 
-    def _search_results(self, window, track: Track):
+    def _search_results(self, window, track: Track, query_override=None):
         search = self._visible_search_field(window)
         if search is None:
             search = self._open_compact_search(window)
-        query = f'{track.title} {track.artist}'
+        query = query_override or f'{track.title} {track.artist}'
         previous = self._search_page_state(window)
         self._set_search_text(search, query)
         submission = self._submit_search(window)
@@ -648,15 +648,82 @@ class WindowsQueueUIA:
             'or the four-item suggestion dropdown.'
         )
 
+    def _open_all_songs(self, window):
+        """Open the full Songs category when the first page shows few tracks."""
+        content = self._find(
+            window, name='Content', kind=self.types.GroupControl,
+        )
+        if content is None:
+            return False
+        section = self._find(
+            content, name='Songs', kind=self.types.ListItemControl,
+        )
+        candidates = []
+        search_roots = [section, content] if section is not None else [content]
+        control_types = [
+            self.types.ButtonControl, self.types.HyperlinkControl,
+            self.types.ListItemControl,
+        ]
+        for root in search_roots:
+            if root is None:
+                continue
+            for kind in control_types:
+                for elem in self._all(root, kind=kind):
+                    try:
+                        name = (elem.CurrentName or '').strip().casefold()
+                        aid = (elem.CurrentAutomationId or '').strip().casefold()
+                    except Exception:
+                        continue
+                    if (name in ('see all songs', 'view all songs',
+                                 'show all songs', 'all songs')
+                            or aid in ('seeallsongs', 'showallsongs',
+                                       'viewallsongs')):
+                        candidates.append(elem)
+            if candidates:
+                break
+        if len(candidates) != 1:
+            return False
+        self._invoke(candidates[0])
+        return True
+
+    def _refresh_visible_matches(self, window, track):
+        content = self._find(
+            window, name='Content', kind=self.types.GroupControl,
+        )
+        songs = self._find(
+            content, name='Songs', kind=self.types.ListItemControl,
+        )
+        if songs is None:
+            return []
+        return self._matching_song_rows(self._rows(songs), track)
+
     def _target_row(self, window, track):
         # Only real, visible WinUI rows can be acted on. Apple Music frequently
         # retains several virtualized copies of a search result at (0, 0).
         self._selection_note = ''
         matched = self._matching_song_rows(self._search_results(window, track), track)
         if not matched:
+            matched = self._wait(
+                lambda: self._refresh_visible_matches(window, track),
+                2.5, 0.2,
+            ) or []
+        if not matched and self._open_all_songs(window):
+            matched = self._wait(
+                lambda: self._refresh_visible_matches(window, track),
+                5.0, 0.2,
+            ) or []
+        if not matched and track.album:
+            # The initial four Songs results might omit an album cut. Retry
+            # the full query with the album to narrow catalog relevance.
+            narrowed = f'{track.title} {track.artist} {track.album}'
+            matched = self._matching_song_rows(
+                self._search_results(window, track, query_override=narrowed),
+                track,
+            )
+        if not matched:
             raise NativeQueueError(
-                'No visible result with the requested title and artist. '
-                'The Songs section may not have loaded yet.'
+                'No exact title-and-artist match appeared in Apple Music full '
+                'Songs results, including its all-songs and album search.'
             )
         if len(matched) == 1:
             return matched[0]
@@ -753,10 +820,17 @@ class WindowsQueueUIA:
                     continue
                 # Only exact Apple Music queue actions. Never select generic
                 # Play, since that would interrupt the stream.
-                if first_request and text == 'play next':
+                if first_request and text in ('play next', 'add to queue'):
                     matches.append(item)
                 elif not first_request and text in ('play last', 'play later', 'add to queue'):
                     matches.append(item)
+            if first_request and len(matches) > 1:
+                # Always prioritize Play Next; Add to Queue is the supported
+                # alternate when Apple's menu exposes no Play Next action.
+                play_next = [m for m in matches if
+                             (m.CurrentName or '').strip().casefold() == 'play next']
+                if len(play_next) == 1:
+                    return play_next[0]
             return matches[0] if len(matches) == 1 else None
         target = self._wait(locate, 3)
         if not target:
