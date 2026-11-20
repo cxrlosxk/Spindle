@@ -301,7 +301,7 @@ class SpindleWindow(QMainWindow):
         top_layout.addStretch(1)
         description = QVBoxLayout(); description.setSpacing(8)
         description.addWidget(label('A LITTLE CONTEXT', 'eyebrow'))
-        context = label('Spindle reads Apple Music playback through Windows. Requests wait here until you choose to play them.', 'muted', True)
+        context = label('Spindle watches Apple Music and automatically delivers Twitch song requests. If Apple Music is unavailable, requests stay pending and are retried.', 'muted', True)
         context.setMaximumWidth(215)
         description.addWidget(context)
         description.addStretch(1)
@@ -314,7 +314,7 @@ class SpindleWindow(QMainWindow):
         queue_title = QHBoxLayout(); queue_title.addWidget(label('Viewer requests', 'section')); queue_title.addStretch(1)
         self.count = label('0 pending', 'muted'); queue_title.addWidget(self.count)
         left_col.addLayout(queue_title)
-        self.disclaimer = label('Only requests confirmed in Apple Music are marked Added to Up Next. Enable experimental queue sync in Settings.', 'muted', True)
+        self.disclaimer = label('Song requests are processed automatically in order. Spindle only marks them as added after verifying Apple Music Playing Next.', 'muted', True)
         self.disclaimer.setStyleSheet('font-size: 12px; color: #b9a997;')
         left_col.addWidget(self.disclaimer)
         self.queue_scroll = QScrollArea(); self.queue_scroll.setWidgetResizable(True)
@@ -387,7 +387,7 @@ class SpindleWindow(QMainWindow):
         footer = QHBoxLayout()
         self.footer = label('Your music stays in Apple Music. Verified requests appear in Up Next.', 'muted'); footer.addWidget(self.footer)
         footer.addStretch(1)
-        footer.addWidget(label('SPINDLE  /  v0.5.1 SEARCH TRACE', 'eyebrow'))
+        footer.addWidget(label('SPINDLE  /  v0.5.2 QUEUE FIX', 'eyebrow'))
         page.addLayout(footer)
 
     def start_monitor(self):
