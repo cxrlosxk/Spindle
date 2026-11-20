@@ -280,7 +280,7 @@ def test_compact_search_absent_is_actionable_and_safe():
     from spindle.native_queue import NativeQueueError
     adapter, state, box, icon = _compact_search_fixture()
     adapter._all = lambda root, **kw: []
-    with pytest.raises(NativeQueueError, match='magnifying-glass'):
+    with pytest.raises(NativeQueueError, match='compact Search'):
         adapter._open_compact_search(object())
     assert state['activated'] == 0
 
@@ -306,7 +306,7 @@ def test_compact_search_activation_without_field_reports_next_action():
     adapter._all = lambda root, **kw: (
         [] if kw.get('aid') == 'TextBox' else old_all(root, **kw)
     )
-    with pytest.raises(NativeQueueError, match='Open Search manually'):
+    with pytest.raises(NativeQueueError, match='brief-focus'):
         adapter._open_compact_search(object())
     assert state['activated'] == 1
 
@@ -689,3 +689,44 @@ def test_offered_play_next_is_preferred_over_add_to_queue():
     adapter._invoke = lambda control: invoked.append(control)
     adapter._select_queue_action(object(), first_request=True)
     assert invoked == [next_song]
+
+
+def test_apple_music_search_access_key_sequence_never_hits_foreground_game():
+    """Apple documents Alt, N, F; no keys may be sent unless Music has focus."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.allow_focus_handoff = True
+    adapter._hwnd = 123
+    state = {'focused': 998, 'keys': []}
+    def set_focus(hwnd):
+        state['focused'] = hwnd
+        return True
+    adapter.user32 = SimpleNamespace(
+        IsWindow=lambda hwnd: True,
+        GetForegroundWindow=lambda: state['focused'],
+        SetForegroundWindow=set_focus,
+        keybd_event=lambda vk, scan, flags, extra: state['keys'].append((vk, flags)),
+    )
+    adapter._wait = lambda fn, *args, **kw: fn()
+    assert adapter._focused_open_search() is True
+    assert state['keys'] == [
+        (0x12, 0), (0x12, 2), (0x4E, 0),
+        (0x4E, 2), (0x46, 0), (0x46, 2),
+    ]
+    assert state['focused'] == 998
+
+
+def test_search_access_keys_refuse_to_type_if_foreground_stays_on_game():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.allow_focus_handoff = True
+    adapter._hwnd = 123
+    adapter.user32 = SimpleNamespace(
+        IsWindow=lambda h: True, GetForegroundWindow=lambda: 999,
+        SetForegroundWindow=lambda h: False,
+        keybd_event=lambda *args: pytest.fail('Never inject keys into game'),
+    )
+    adapter._wait = lambda fn, *args, **kw: fn()
+    assert adapter._focused_open_search() is False
