@@ -246,6 +246,15 @@ def _compact_search_fixture():
     adapter._control = lambda node: SearchControl() if node is icon else SearchBoxControl()
     adapter._wait = lambda fn, *args, **kw: fn()
     adapter._rows = lambda section: [result_row]
+    adapter._usable_result = lambda elem: True
+    adapter._scroll_song_section = lambda elem: False
+    # This fixture models a real query submission and a replaced results
+    # page, rather than Apple's auto-suggestion dropdown.
+    adapter._submit_search = lambda window: 'mock-full-search'
+    adapter._search_page_state = lambda window: (
+        ('new-rows', 'Results for ' + state['query'], (('AMEN', 'Beyoncé'),))
+        if state['query'] else (None, '', ())
+    )
     return adapter, state, box, icon
 
 
