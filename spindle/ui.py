@@ -488,7 +488,10 @@ class SpindleWindow(QMainWindow):
                                         ('Added to Up Next' if request.status == 'queued' else
                                          'Verifying Apple Music — no duplicate will be added'
                                          if request.status == 'verifying' else
-                                         'Waiting for automatic delivery' if self.settings.native_queue_enabled
+                                         ('Waiting for Apple Music focus'
+                                          if self.settings.protect_foreground
+                                          else 'Waiting for automatic delivery')
+                                         if self.settings.native_queue_enabled
                                          else 'Auto queue disabled'), 'muted'))
                 row.addLayout(details,1)
                 if request.status in ('pending', 'verifying'):
