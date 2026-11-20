@@ -39,11 +39,32 @@ def strict_track_match(title: str, artist: str, track: Track) -> bool:
     return bool(title and artist and title == expected_title and artist == expected_artist)
 
 
+def queue_track_match(title: str, artist_label: str, track: Track) -> bool:
+    """Match Apple's queue display, where artist and album share one label.
+
+    Example from the user's Playing Next screen:
+        needy
+        Ariana Grande — thank u, next
+    This is NOT the same as loosening song-search artist matching: only
+    an exact artist followed by Apple's album separator is accepted.
+    """
+    if norm(title) != norm(track.title) or not norm(track.title):
+        return False
+    if norm(artist_label) == norm(track.artist):
+        return True
+    for delimiter in (' — ', ' – ', ' - '):
+        if delimiter in artist_label:
+            artist, album = artist_label.split(delimiter, 1)
+            if album.strip() and norm(artist) == norm(track.artist):
+                return True
+    return False
+
+
 def observed_increment(before: list[tuple[str, str]],
                        after: list[tuple[str, str]], track: Track) -> bool:
     """Verify new occurrence, not merely that the track was already queued."""
     def count(items):
-        return sum(strict_track_match(t, a, track) for t, a in items)
+        return sum(queue_track_match(t, a, track) for t, a in items)
     return count(after) > count(before)
 
 
@@ -1028,7 +1049,7 @@ class WindowsQueueUIA:
             # A previous attempt may have reached Apple's queue even if UIA
             # failed or timed out during verification. Never queue the same
             # title/artist twice during automatic retries.
-            if any(strict_track_match(t, a, track) for t, a in before):
+            if any(queue_track_match(t, a, track) for t, a in before):
                 return Delivery(
                     True,
                     'Requested title and artist already appear in Playing Next; '
@@ -1067,7 +1088,7 @@ class WindowsQueueUIA:
         try:
             window = self._find_window()
             contents = self._queue_snapshot(window)
-            existing = any(strict_track_match(title, artist, track)
+            existing = any(queue_track_match(title, artist, track)
                            for title, artist in contents)
             return Delivery(
                 existing,
