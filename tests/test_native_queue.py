@@ -565,3 +565,34 @@ def test_song_more_can_be_invoked_by_name_even_before_hover():
     adapter._invoke = lambda elem: called.append(elem)
     adapter._open_more(object())
     assert called == [icon]
+
+
+def test_compact_search_uses_observed_autosuggestbox_when_icon_unlabeled():
+    """Real diagnostic: AutoSuggestBox is a GroupControl with InvokePattern."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(
+        ButtonControl='button', ListItemControl='list', TabItemControl='tab',
+        GroupControl='group',
+    )
+    auto = SimpleNamespace(
+        CurrentName='', CurrentAutomationId='', CurrentClassName='AutoSuggestBox',
+        CurrentControlType='group', CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(
+            left=-3826, top=-566, right=-3418, bottom=51,
+        ),
+    )
+    adapter._all = lambda window, **kw: [auto] if kw.get('kind') == 'group' else []
+    results = adapter._search_entry_candidates(object())
+    assert results == [auto]
+    state = {'opened': False}
+    class Control:
+        def GetInvokePattern(self): return self
+        def Invoke(self, **kw): state['opened'] = True
+    adapter._control = lambda elem: Control()
+    box = object()
+    adapter._visible_search_field = lambda window: box if state['opened'] else None
+    adapter._wait = lambda fn, *args, **kw: fn()
+    assert adapter._open_compact_search(object()) is box
+    assert state['opened']
