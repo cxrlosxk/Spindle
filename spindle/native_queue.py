@@ -164,29 +164,80 @@ class WindowsQueueUIA:
         else:
             self._invoke(element)
 
+    def _queue_toggle_is_on(self, toggle) -> bool | None:
+        """Read Apple Music's queue toggle even if its list has no rows."""
+        if toggle is None:
+            return None
+        try:
+            control = self._control(toggle)
+            if control.GetPattern(10015):  # UIA TogglePattern
+                return control.GetTogglePattern().ToggleState == 1
+        except Exception:
+            return None
+        return None
+
+    def _empty_queue_visible(self, window) -> bool:
+        """WinUI may omit PlayQueueListView until a song is actually queued."""
+        # Match the Windows English empty-state displayed in Playing Next.
+        for label in ('No upcoming songs.', 'No upcoming songs'):
+            element = self._find(window, name=label, kind=self.types.TextControl)
+            if element is not None:
+                try:
+                    if element.CurrentIsOffscreen:
+                        continue
+                except Exception:
+                    pass
+                return True
+        return False
+
     def _queue_snapshot(self, window) -> list[tuple[str, str]]:
         toggle = self._find(window, aid='PlayQueueToggleButton', kind=self.types.ButtonControl)
-        panel = self._playing_next(window)
-        opened = False
-        if panel is None:
+
+        def ready():
+            queue_list = self._playing_next(window)
+            if queue_list is not None:
+                return ('list', queue_list)
+            if self._empty_queue_visible(window):
+                return ('empty', None)
+            return None
+
+        # An *empty* Playing Next panel can be open without an accessible list.
+        # The old implementation would press its toggle and CLOSE it, then
+        # incorrectly report that the panel failed to open.
+        existing = ready()
+        open_state = self._queue_toggle_is_on(toggle)
+        already_open = open_state is True or existing is not None
+        opened_here = False
+        if not already_open:
             if toggle is None:
                 raise NativeQueueError('Apple Music Playing Next button was not found.')
             self._press_queue_toggle(toggle)
-            opened = True
-            panel = self._wait(lambda: self._playing_next(window), 3)
-            if panel is None:
-                raise NativeQueueError('Apple Music Playing Next did not open.')
+            opened_here = True
+
         try:
-            results = []
-            # The list can load asynchronously; take a second snapshot.
+            # Never assume that ToggleState=on means the list has loaded.
+            # Wait for either an actual list or an explicit empty-state label.
+            status = ready() or self._wait(ready, 4.0, 0.15)
+            if status is None:
+                if self._queue_toggle_is_on(toggle) is True:
+                    raise NativeQueueError(
+                        'Playing Next opened, but Apple Music did not expose '
+                        'its queue list or empty-state text to accessibility.'
+                    )
+                raise NativeQueueError('Apple Music Playing Next did not open.')
+            state, panel = status
+            if state == 'empty':
+                return []
             time.sleep(0.18)
+            results = []
             for row in self._rows(panel):
                 texts = self._row_texts(row)
                 if len(texts) >= 2:
                     results.append((texts[0], texts[1]))
             return results
         finally:
-            if opened:
+            if opened_here:
+                # Preserve the user's previous panel state.
                 try:
                     self._press_queue_toggle(toggle)
                 except Exception:
