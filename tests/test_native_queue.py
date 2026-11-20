@@ -453,3 +453,97 @@ def test_stale_submit_button_is_ignored_before_invoking():
     assert adapter._visible_action_button(object(), 'QueryButton') is good
     adapter._all = lambda root, **kw: [hidden]
     assert adapter._visible_action_button(object(), 'QueryButton') is None
+
+
+def test_search_filters_virtualized_zero_size_rows():
+    """Observed diagnostics contained many ListViewItem rows at (0,0,0,0)."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    stale = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(
+            left=0, top=0, right=0, bottom=0,
+        ),
+    )
+    visible = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(
+            left=-3500, top=-300, right=-3100, bottom=-250,
+        ),
+    )
+    hidden = SimpleNamespace(CurrentIsOffscreen=True)
+    assert not adapter._usable_result(stale)
+    assert not adapter._usable_result(hidden)
+    assert adapter._usable_result(visible)
+
+
+def test_duplicate_search_ignores_hidden_rows_and_selects_visible_match():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    stale = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=0, right=0, bottom=0),
+    )
+    active = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=-400, top=20, right=-100, bottom=60),
+    )
+    adapter._search_results = lambda window, track: [stale, active]
+    adapter._row_texts = lambda row: ['9 to 5', 'Dolly Parton']
+    selected = adapter._target_row(object(), Track('9 to 5', 'Dolly Parton', '9 to 5 and Odd Jobs'))
+    assert selected is active
+    assert adapter._selection_note == ''
+
+
+def test_exact_album_match_wins_when_multiple_live_results():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    first = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=0, right=100, bottom=30),
+    )
+    second = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=32, right=100, bottom=65),
+    )
+    adapter._search_results = lambda window, track: [first, second]
+    adapter._row_texts = lambda row: (
+        ['Forever', 'Mariah Carey', 'Greatest Hits'] if row is first
+        else ['Forever', 'Mariah Carey', 'Daydream']
+    )
+    selected = adapter._target_row(object(), Track('Forever', 'Mariah Carey', 'Daydream'))
+    assert selected is second
+    assert adapter._selection_note == ''
+
+
+def test_same_artist_title_multiple_editions_produces_candid_note():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    def row(top):
+        return SimpleNamespace(
+            CurrentIsOffscreen=False,
+            CurrentBoundingRectangle=SimpleNamespace(left=0, top=top, right=100, bottom=top+30),
+        )
+    first, second = row(20), row(60)
+    adapter._search_results = lambda window, track: [first, second]
+    adapter._row_texts = lambda row: ['Forever', 'Mariah Carey']
+    assert adapter._target_row(object(), Track('Forever', 'Mariah Carey', 'Daydream')) is first
+    assert 'album or recording edition' in adapter._selection_note
+
+
+def test_more_requires_named_visible_song_button():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA, NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(ButtonControl='button')
+    other = SimpleNamespace(CurrentName='Play', CurrentAutomationId='PlayButton')
+    adapter._all = lambda root, **kwargs: [other]
+    adapter._usable_result = lambda control: True
+    adapter._invoke = lambda control: pytest.fail('Would invoke arbitrary button')
+    with pytest.raises(NativeQueueError, match='song-specific More'):
+        adapter._open_more(object())
+
