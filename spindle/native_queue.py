@@ -585,12 +585,13 @@ class WindowsQueueUIA:
             except Exception:
                 pass
         # A separate WinUI search control can sometimes expose Invoke.
-        # Treat this as provisional, just like a posted Return.
+        # Do NOT also post Enter immediately: if Invoke already submitted the
+        # query, Enter could play a highlighted result and interrupt music.
         for candidate in self._all(window, kind=self.types.GroupControl):
             try:
                 if candidate.CurrentClassName == 'AutoSuggestBox':
                     self._invoke(candidate)
-                    break
+                    return 'autosuggest-invoke'
             except Exception:
                 continue
         if self._post_music_return():
@@ -643,12 +644,12 @@ class WindowsQueueUIA:
             try:
                 old_runtime, old_status, old_texts = previous
                 new_runtime, new_status, new_texts = self._search_page_state(window)
+                # Typing a query updates autocomplete and may even change
+                # SearchPageStatus. Require the actual Songs results tree or
+                # visible row contents to change before trusting the page.
                 state_changed = (
-                    new_runtime is not None and new_runtime != old_runtime
+                    (new_runtime is not None and new_runtime != old_runtime)
                     or bool(new_texts and new_texts != old_texts)
-                    or bool(new_status and new_status != old_status
-                            and norm(track.title) in norm(new_status)
-                            and norm(track.artist) in norm(new_status))
                 )
                 if not state_changed:
                     return None
@@ -673,12 +674,19 @@ class WindowsQueueUIA:
                 # UIA references commonly go stale as WinUI replaces its page.
                 return None
 
-        rows = self._wait(
-            find_new_page, 2.5 if getattr(self, 'allow_focus_handoff', False)
-            else 10.0, 0.2,
-        )
+        # Each submission technique is tried separately. Never send two
+        # Enter actions in quick succession: a late-loading results page could
+        # interpret the second as Play Now.
+        wait_first = 3.0 if submission == 'autosuggest-invoke' else 8.0
+        rows = self._wait(find_new_page, wait_first, 0.2)
         if rows:
             return rows
+        if submission == 'autosuggest-invoke':
+            if self._post_music_return():
+                submission += '+targeted-enter'
+                rows = self._wait(find_new_page, 7.0, 0.2)
+                if rows:
+                    return rows
         if self._focused_return_only_if_explicitly_allowed(search):
             # This is opt-in because the OS must briefly focus Apple Music.
             rows = self._wait(find_new_page, 8.0, 0.2)
