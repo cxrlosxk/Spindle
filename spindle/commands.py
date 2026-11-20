@@ -33,7 +33,10 @@ class CommandEngine:
             self._current = current
             self._previous_playing_key = key
         if previous and key and previous != key:
-            for requested in self.store.queued():
+            # A track can start playing before Windows exposes its queued
+            # row. Count the playback transition as completion even when
+            # Add to Queue previously had an uncertain verification outcome.
+            for requested in self.store.queued() + self.store.verifying():
                 if strict_track_match(requested.title, requested.artist, current):
                     if self.store.change(requested.id, 'played'):
                         self.on_change()
