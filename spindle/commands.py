@@ -43,7 +43,8 @@ class CommandEngine:
         with self._lock:
             return self._current
 
-    def handle(self, user_id: str, user_name: str, message: str, is_moderator=False) -> str | None:
+    def handle(self, user_id: str, user_name: str, message: str,
+               is_moderator=False, is_broadcaster=False) -> str | None:
         message = message.strip()
         match = re.match(r'^(!\S+)(?:\s+(.*))?$', message, re.DOTALL)
         if not match:
@@ -83,7 +84,8 @@ class CommandEngine:
                     return f'{track.title} is longer than the {self.settings.max_duration_minutes}-minute request limit.'
                 request_id, position = self.store.add(track, user_id, user_name,
                     max_queue=self.settings.max_queue, max_per_viewer=self.settings.max_per_viewer,
-                    cooldown_seconds=self.settings.cooldown_seconds)
+                    cooldown_seconds=self.settings.cooldown_seconds,
+                    is_broadcaster=is_broadcaster)
                 self.on_change()
                 if self.settings.native_queue_enabled and self.deferred_native_delivery:
                     self.on_request_accepted(request_id)
