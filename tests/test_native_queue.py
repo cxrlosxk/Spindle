@@ -421,3 +421,34 @@ def test_invoke_never_uses_mouse_or_keyboard_on_missing_patterns():
     adapter._control = lambda element: control
     with pytest.raises(NativeQueueError, match='no usable Invoke or Legacy'):
         adapter._invoke(object())
+
+
+def test_search_text_uses_legacy_pattern_when_value_is_unavailable():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    saved = []
+    legacy = SimpleNamespace(SetValue=lambda text, **kwargs: saved.append(text))
+    control = SimpleNamespace(
+        GetValuePattern=lambda: None,
+        GetLegacyIAccessiblePattern=lambda: legacy,
+    )
+    adapter._control = lambda e: control
+    adapter._set_search_text(object(), 'Fantasy Mariah Carey')
+    assert saved == ['Fantasy Mariah Carey']
+
+
+def test_stale_submit_button_is_ignored_before_invoking():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(ButtonControl='button')
+    hidden = SimpleNamespace(CurrentIsOffscreen=True)
+    good = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=-1600, right=-1540, top=30, bottom=70),
+    )
+    adapter._all = lambda root, **kw: [hidden, good]
+    assert adapter._visible_action_button(object(), 'QueryButton') is good
+    adapter._all = lambda root, **kw: [hidden]
+    assert adapter._visible_action_button(object(), 'QueryButton') is None
