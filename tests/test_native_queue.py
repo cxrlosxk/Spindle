@@ -547,3 +547,21 @@ def test_more_requires_named_visible_song_button():
     with pytest.raises(NativeQueueError, match='song-specific More'):
         adapter._open_more(object())
 
+
+
+def test_song_more_can_be_invoked_by_name_even_before_hover():
+    """WinUI can hide More's bounds until the pointer hovers over the song."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(ButtonControl='button')
+    icon = SimpleNamespace(
+        CurrentName='More', CurrentAutomationId='',
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=0, right=0, bottom=0),
+    )
+    adapter._all = lambda root, **kwargs: [icon]
+    called = []
+    adapter._invoke = lambda elem: called.append(elem)
+    adapter._open_more(object())
+    assert called == [icon]
