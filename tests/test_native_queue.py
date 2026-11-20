@@ -112,3 +112,15 @@ def test_bridge_worker_reuses_one_backend():
     assert bridge.enqueue(replace(SONG,title='Halo')).verified
     assert len(made) == 1
     assert len(made[0].received) == 2
+
+
+def test_windows_uia_bridge_initializes_without_apple_music():
+    """CI smoke test for the real COM adapter; song insertion needs user's PC."""
+    import sys
+    if sys.platform != 'win32':
+        pytest.skip('Windows UI Automation is not available on this host')
+    from uiautomation import UIAutomationInitializerInThread
+    from spindle.native_queue import WindowsQueueUIA
+    with UIAutomationInitializerInThread():
+        backend = WindowsQueueUIA()
+        assert backend.api is not None
