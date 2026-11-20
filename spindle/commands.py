@@ -101,8 +101,9 @@ class CommandEngine:
                     self.on_status(f'Native queue could not be verified: {delivery.reason}')
                     return f'♫ Request saved in Spindle: {track.title} — {track.artist}. Could not verify Apple Music Up Next.'
                 return (
-                    f'♫ Request #{request_id} saved: {track.title} — {track.artist}. '
-                    'Automatic Apple Music queueing is disabled in Spindle Settings.'
+                    f'♫ Request saved in Spindle: {track.title} — {track.artist}. '
+                    'Not yet in Apple Music Up Next. '
+                    'Automatic queueing is disabled or unavailable.'
                 )
             except (CatalogError, QueueError) as exc:
                 return str(exc)
