@@ -193,7 +193,7 @@ class SettingsDialog(QDialog):
         self.native_queue_enabled.setChecked(settings.native_queue_enabled)
         outer.addWidget(self.native_queue_enabled)
         self.protect_foreground = QCheckBox(
-            'Keep games and other apps in focus (background-only queueing)'
+            'Protect active apps: queue when Apple Music regains focus'
         )
         self.protect_foreground.setChecked(settings.protect_foreground)
         outer.addWidget(self.protect_foreground)
@@ -413,7 +413,7 @@ class SpindleWindow(QMainWindow):
         footer = QHBoxLayout()
         self.footer = label('Your music stays in Apple Music. Verified requests appear in Up Next.', 'muted'); footer.addWidget(self.footer)
         footer.addStretch(1)
-        footer.addWidget(label('SPINDLE  /  v0.5.3 GAME SAFE', 'eyebrow'))
+        footer.addWidget(label('SPINDLE  /  v0.5.4 FOCUS GUARD', 'eyebrow'))
         page.addLayout(footer)
 
     def start_monitor(self):
