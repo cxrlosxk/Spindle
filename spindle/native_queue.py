@@ -942,6 +942,15 @@ class WindowsQueueUIA:
             window = self._find_window()
             stage = 'read Playing Next before insertion'
             before = self._queue_snapshot(window)
+            # A previous attempt may have reached Apple's queue even if UIA
+            # failed or timed out during verification. Never queue the same
+            # title/artist twice during automatic retries.
+            if any(strict_track_match(t, a, track) for t, a in before):
+                return Delivery(
+                    True,
+                    'Requested title and artist already appear in Playing Next; '
+                    'no duplicate was inserted.',
+                )
             stage = 'find song via Search'
             row = self._target_row(window, track)
             stage = 'open song More menu'
