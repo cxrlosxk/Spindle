@@ -494,20 +494,33 @@ class WindowsQueueUIA:
         self._invoke(target)
 
     def deliver(self, track: Track, first_request: bool = False) -> Delivery:
-        window = self._find_window()
-        before = self._queue_snapshot(window)
-        row = self._target_row(window, track)
-        self._open_more(row)
-        self._select_queue_action(window, first_request)
-        # Apple Music's Windows queue sometimes ignores Play Last altogether.
-        # Never treat a successfully invoked menu command as proof of insertion.
-        for _ in range(8):
-            time.sleep(0.28)
-            current = self._queue_snapshot(window)
-            if observed_increment(before, current, track):
-                return Delivery(True, 'Verified in Apple Music Playing Next.')
-        return Delivery(False, 'Apple Music did not show the song in Playing Next. Request kept in Spindle.')
-
+        """Attempt native insertion with a named failure stage for diagnostics."""
+        stage = 'locate Apple Music'
+        try:
+            window = self._find_window()
+            stage = 'read Playing Next before insertion'
+            before = self._queue_snapshot(window)
+            stage = 'find song via Search'
+            row = self._target_row(window, track)
+            stage = 'open song More menu'
+            self._open_more(row)
+            stage = 'choose Play Next or Play Last'
+            self._select_queue_action(window, first_request)
+            stage = 'verify Playing Next after insertion'
+            # Invoking an accessible menu isn't proof. Require a new,
+            # correctly identified track in Apple's real queue.
+            for _ in range(8):
+                time.sleep(0.28)
+                current = self._queue_snapshot(window)
+                if observed_increment(before, current, track):
+                    return Delivery(True, 'Verified in Apple Music Playing Next.')
+            return Delivery(
+                False, 'Apple Music did not show the new song in Playing Next.'
+            )
+        except Exception as exc:
+            raise NativeQueueError(
+                f'{stage}: {type(exc).__name__}: {str(exc)[:170]}'
+            ) from exc
 
     def inspect_diagnostics(self):
         """Passive UIA snapshot for users who explicitly click Diagnose."""
