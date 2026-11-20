@@ -24,10 +24,16 @@ class NativeQueueError(RuntimeError):
     pass
 
 
+class ForegroundProtectionError(NativeQueueError):
+    """No Apple Music UI action is allowed while another app has focus."""
+    pass
+
+
 @dataclass(frozen=True)
 class Delivery:
     verified: bool
     reason: str
+    uncertain: bool = False  # A queue action may already have reached Apple Music.
 
 
 def strict_track_match(title: str, artist: str, track: Track) -> bool:
@@ -103,6 +109,37 @@ class WindowsQueueUIA:
         self._hwnd = None
         self._temporarily_restored_hwnd = None
         self.allow_focus_handoff = False
+        self.protect_foreground = False
+
+    def _assert_focus_safe(self):
+        """Fail closed before any UIA mutation that could activate Apple Music.
+
+        InvokePattern, SetValue and even a queue TogglePattern can cause a
+        WinUI window to take focus without SetForegroundWindow being called.
+        Background-only mode therefore defers mutations unless Apple Music
+        is ALREADY the foreground window. There is no public Apple Music
+        queue API that can guarantee focus-free insertion during a game.
+        """
+        if not getattr(self, 'protect_foreground', False):
+            return
+        hwnd = getattr(self, '_hwnd', None)
+        try:
+            if not hwnd or not self.user32.IsWindow(hwnd):
+                raise ForegroundProtectionError(
+                    'Game-safe mode is waiting for Apple Music to be available.'
+                )
+            foreground = self.user32.GetForegroundWindow()
+            if not foreground or foreground != hwnd:
+                raise ForegroundProtectionError(
+                    'Game-safe mode is protecting your active app. Song request '
+                    'is saved and will retry when Apple Music has focus.'
+                )
+        except ForegroundProtectionError:
+            raise
+        except Exception as exc:
+            raise ForegroundProtectionError(
+                'Could not verify the active window; no Apple Music controls were used.'
+            ) from exc
 
     def _finish_window(self):
         """Return Apple Music to its minimized state without activation."""
@@ -140,6 +177,9 @@ class WindowsQueueUIA:
             raise NativeQueueError('Open the official Apple Music Windows app before enabling native queue sync.')
         hwnd = matches[0]
         self._hwnd = hwnd
+        # Check before even restoring a minimized Music window. Showing it
+        # (even SW_SHOWNOACTIVATE) can cover a game in some WinUI builds.
+        self._assert_focus_safe()
         if u.IsIconic(hwnd):
             # UIA has no usable visual tree while Apple Music is minimized.
             # SW_SHOWNOACTIVATE shows it at its existing location but should
@@ -257,6 +297,7 @@ class WindowsQueueUIA:
         WinUI buttons can expose LegacyIAccessible instead of InvokePattern.
         This fallback does not change keyboard focus or move the mouse.
         """
+        self._assert_focus_safe()
         if element is None:
             raise NativeQueueError('Apple Music action control was not found.')
         control = self._control(element)
@@ -323,6 +364,7 @@ class WindowsQueueUIA:
         return None
 
     def _press_queue_toggle(self, element):
+        self._assert_focus_safe()
         control = self._control(element)
         # Apple Music sometimes exposes TogglePattern without InvokePattern.
         if control.GetPattern(10015):
@@ -519,6 +561,7 @@ class WindowsQueueUIA:
 
     def _open_compact_search(self, window):
         """Reveal the hidden search box using UIA, without typing or clicking."""
+        self._assert_focus_safe()
         # Allow a freshly restored WinUI window to rebuild its accessibility
         # tree; immediately after SW_SHOWNOACTIVATE the tree can still be stale.
         candidates = self._wait(
@@ -598,6 +641,7 @@ class WindowsQueueUIA:
 
     def _set_search_text(self, element, query: str):
         """Set target search text through accessibility, never global keystrokes."""
+        self._assert_focus_safe()
         control = self._control(element)
         failures = []
         for method in ('GetValuePattern', 'GetLegacyIAccessiblePattern'):
@@ -639,6 +683,7 @@ class WindowsQueueUIA:
 
     def _scroll_song_section(self, songs):
         """Realize Songs through UIA; return whether navigation was requested."""
+        self._assert_focus_safe()
         try:
             pattern = self._control(songs).GetScrollItemPattern()
             if pattern:
@@ -699,6 +744,7 @@ class WindowsQueueUIA:
         foreground game. Results are *never* trusted until the results view
         actually changes. Windows or WinUI may ignore synthetic messages.
         """
+        self._assert_focus_safe()
         hwnd = getattr(self, '_hwnd', None)
         if hwnd is None or not self.user32.IsWindow(hwnd):
             return False
