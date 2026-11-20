@@ -22,7 +22,8 @@ class Settings:
     max_duration_minutes: int = 12
     allow_explicit: bool = True
     native_queue_enabled: bool = True  # Automatic song requests, switchable in Settings.
-    allow_focus_handoff: bool = False  # Opt-in: may briefly interrupt a foreground game.
+    allow_focus_handoff: bool = False  # Legacy compatibility preference.
+    protect_foreground: bool = True  # Game-safe: never request focus handoff.
     auto_queue_v2_initialized: bool = True
 
     @classmethod
