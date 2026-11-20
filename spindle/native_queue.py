@@ -474,14 +474,52 @@ class WindowsQueueUIA:
         target = named[0] if named else buttons[-1]
         self._invoke(target)
 
-    def _select_queue_action(self, window, first_request=False):
-        """First Spindle request plays next; later requests append in order. Never Play now."""
-        def locate():
-            items = self._all(window, kind=self.types.MenuItemControl)
-            matches = []
+    def _visible_menu_items(self, window):
+        """Find context menus that WinUI may host outside the music window.
+
+        A WinUI popup can be a separate top-level accessibility window. Only
+        search other top-level windows owned by the *same process* as Apple
+        Music. Never invoke a menu belonging to the active game or Spindle.
+        """
+        def visible(items):
+            result = []
             for item in items:
-                text = (item.CurrentName or '').strip().casefold()
-                # English UI variants only; no speculative translated selectors.
+                try:
+                    if not item.CurrentIsOffscreen:
+                        result.append(item)
+                except Exception:
+                    pass
+            return result
+
+        items = visible(self._all(window, kind=self.types.MenuItemControl))
+        if items:
+            return items
+        try:
+            pid = int(window.CurrentProcessId)
+            desktop = self.api.GetRootElement()
+            top_windows = self._all(desktop, scope=2)
+        except Exception:
+            return []
+        for candidate in top_windows:
+            try:
+                if candidate.CurrentIsOffscreen or int(candidate.CurrentProcessId) != pid:
+                    continue
+                items.extend(visible(self._all(candidate, kind=self.types.MenuItemControl)))
+            except Exception:
+                continue
+        return items
+
+    def _select_queue_action(self, window, first_request=False):
+        """First request plays next; later requests append. Never use Play now."""
+        def locate():
+            matches = []
+            for item in self._visible_menu_items(window):
+                try:
+                    text = (item.CurrentName or '').strip().casefold()
+                except Exception:
+                    continue
+                # Only exact Apple Music queue actions. Never select generic
+                # Play, since that would interrupt the stream.
                 if first_request and text == 'play next':
                     matches.append(item)
                 elif not first_request and text in ('play last', 'play later', 'add to queue'):
@@ -490,7 +528,9 @@ class WindowsQueueUIA:
         target = self._wait(locate, 3)
         if not target:
             action = 'Play Next' if first_request else 'Play Last/Play Later'
-            raise NativeQueueError(f'No unambiguous {action} menu item. Native queue left unchanged.')
+            raise NativeQueueError(
+                f'No unambiguous {action} menu item; no playback action selected.'
+            )
         self._invoke(target)
 
     def deliver(self, track: Track, first_request: bool = False) -> Delivery:
