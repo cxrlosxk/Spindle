@@ -18,7 +18,7 @@ MAX_SECONDS = 14.0
 SAFE_NAME = re.compile(
     r"^(?:Search|Search Apple Music|Search Music|Search in Apple Music|"
     r"Playing Next|Play Next|Play Last|Play Later|Add to Queue|"
-    r"No upcoming songs\\.?|More|More Options|"
+    r"No upcoming songs[.]?|More|More Options|"
     r"Songs|Content|Library|Browse|Home|Back|Cancel|"
     r"Apple Music|Clear Search|Show Queue|Queue|"
     r"Your Library|Search Results)$", re.IGNORECASE,
@@ -51,7 +51,7 @@ def public_id(value: str) -> str:
     if not isinstance(value, str):
         return ""
     value = value[:130]
-    if not re.fullmatch(r"[A-Za-z0-9_.:!\\-]*", value):
+    if not re.fullmatch(r"[A-Za-z0-9_.:!-]*", value):
         return "[redacted-id]"
     return value
 
