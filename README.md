@@ -93,3 +93,42 @@ the queue, finding the song, opening More, choosing Play Next/Last, or verifying
 the result. This is particularly helpful for COM failures on multi-monitor
 setups. UIA snapshots and CI tests do **not** establish real-world insertion
 success: that still requires testing in a signed-in Apple Music instance.
+
+
+## Automatic Twitch requests (v0.5 preview)
+
+`!sr needy Ariana Grande` creates a durable pending request immediately.
+Spindle then attempts Apple Music delivery on a background worker **in the
+order requests arrived**. The broadcaster does not have to approve or click
+Queue for each request. The optional **Retry** button is for diagnostics only.
+
+Spindle will not claim that a request is in Playing Next until it can verify
+a matching title and artist in the official Apple Music Windows application.
+Failed delivery is retried with increasing backoff while the app is running;
+Spindle does not forcibly skip earlier requests or start playback of a new
+track. It uses Apple's queue actions to preserve the current playlist.
+
+**Important technical constraints:**
+
+- Apple Music for Windows exposes no supported native queue API. Spindle uses
+  Windows UI Automation, whose behavior changes across app versions.
+- Filling an `AutoSuggestBox` displays suggestions (usually a few items) but
+  **does not submit a full search**. Spindle explicitly tries the QueryButton,
+  then app-scoped background Enter and confirms the results page changed.
+  Old search results and the suggestion list are never mistaken for a new
+  full-results page.
+- When minimized, Apple Music can be temporarily restored using Windows'
+  `SW_SHOWNOACTIVATE`, then returned to minimized state afterward.
+- The **optional** Settings checkbox **Allow brief focus handoff** is off by
+  default. If the app ignores the non-activating search path, this mode can
+  briefly focus Apple Music to use its documented `Alt, N, F` Search access
+  keys and Enter. **This can briefly interrupt a game.** The fallback refuses
+  to send keyboard input unless Apple Music is verified as the foreground app.
+- If neither accessible controls nor the chosen input mode work, delivery
+  remains pending. No false success, no song skipped, and no requirement to
+  manually approve each request.
+
+Test with the official Microsoft Store app: play a song from a playlist,
+minimize Apple Music, issue `!sr` from Twitch, and verify the next track and
+subsequent return to the playlist. GitHub Actions cannot verify these live
+Windows player interactions; only a signed-in workstation can.
