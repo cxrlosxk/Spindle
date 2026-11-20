@@ -509,6 +509,12 @@ class WindowsQueueUIA:
         return Delivery(False, 'Apple Music did not show the song in Playing Next. Request kept in Spindle.')
 
 
+    def inspect_diagnostics(self):
+        """Passive UIA snapshot for users who explicitly click Diagnose."""
+        from .diagnostics import inspect_window
+        return inspect_window(self)
+
+
 class NativeQueueBridge:
     """Serializes all native UIA calls to one COM-initialized, daemon thread."""
     def __init__(self, backend_factory=None, timeout=18.0):
@@ -539,18 +545,49 @@ class NativeQueueBridge:
                 track, first_request, future = self.tasks.get()
                 if future.cancelled():
                     continue
+                is_probe = track is None
                 try:
                     if backend is None:
                         raise NativeQueueError(startup_error)
-                    result = backend.deliver(track, first_request=first_request)
+                    if is_probe:
+                        result = backend.inspect_diagnostics()
+                    else:
+                        result = backend.deliver(track, first_request=first_request)
                     if not future.cancelled():
                         future.set_result(result)
                 except Exception as exc:
                     if not future.cancelled():
-                        future.set_result(Delivery(False, str(exc)[:260]))
+                        if is_probe:
+                            future.set_result({
+                                "schema": 1, "read_only": True,
+                                "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+                            })
+                        else:
+                            future.set_result(Delivery(False, str(exc)[:260]))
         finally:
             if context:
                 context.__exit__(None, None, None)
+
+    def diagnose(self) -> dict:
+        """Return diagnostic details without modifying Apple Music or its queue."""
+        if self.backend_factory is None and sys.platform != 'win32':
+            return {"schema": 1, "read_only": True, "error": "Windows is required."}
+        with self.lock:
+            if not self.worker:
+                self.worker = threading.Thread(
+                    target=self._run, daemon=True, name='AppleMusicQueueUIA'
+                )
+                self.worker.start()
+        future = Future()
+        self.tasks.put((None, False, future))
+        try:
+            return future.result(timeout=max(35.0, self.timeout))
+        except FutureTimeout:
+            future.cancel()
+            return {
+                "schema": 1, "read_only": True,
+                "error": "Apple Music accessibility inspection timed out.",
+            }
 
     def enqueue(self, track: Track, first_request: bool = False) -> Delivery:
         if self.backend_factory is None and sys.platform != 'win32':
