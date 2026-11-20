@@ -449,13 +449,15 @@ class WindowsQueueUIA:
         return True
 
     def _scroll_song_section(self, songs):
-        """Realize the Songs section using UI Automation without input events."""
+        """Realize Songs through UIA; return whether navigation was requested."""
         try:
             pattern = self._control(songs).GetScrollItemPattern()
             if pattern:
                 pattern.ScrollIntoView(waitTime=0)
+                return True
         except Exception:
             pass
+        return False
 
     def _matching_song_rows(self, rows, track):
         matches = []
@@ -492,20 +494,37 @@ class WindowsQueueUIA:
         # In either case, confirm the results have had a chance to change.
         started = time.monotonic()
 
+        requested_scroll = False
+
         def find_rows():
-            content = self._find(window, name='Content', kind=self.types.GroupControl)
-            songs = self._find(content, name='Songs', kind=self.types.ListItemControl)
-            if songs is None:
-                return None
-            if old_id is not None:
-                try:
-                    if songs.GetRuntimeId() == old_id and time.monotonic() - started < 1.6:
+            nonlocal requested_scroll
+            try:
+                content = self._find(
+                    window, name='Content', kind=self.types.GroupControl,
+                )
+                songs = self._find(
+                    content, name='Songs', kind=self.types.ListItemControl,
+                )
+                if songs is None:
+                    return None
+                if old_id is not None:
+                    try:
+                        if songs.GetRuntimeId() == old_id and time.monotonic() - started < 1.6:
+                            return None
+                    except Exception:
+                        pass
+                if not requested_scroll:
+                    requested_scroll = True
+                    if self._scroll_song_section(songs):
+                        # Scrolling can invalidate WinUI result elements. Read
+                        # them on the next poll instead of using a stale pointer.
                         return None
-                except Exception:
-                    pass
-            self._scroll_song_section(songs)
-            rows = [r for r in self._rows(songs) if self._usable_result(r)]
-            return rows if rows else None
+                rows = [r for r in self._rows(songs) if self._usable_result(r)]
+                return rows if rows else None
+            except Exception:
+                # WinUI replaces the accessibility tree while navigating.
+                # Re-find the section on the next bounded polling iteration.
+                return None
 
         rows = self._wait(find_rows, 9.0, 0.2)
         if rows is None:
