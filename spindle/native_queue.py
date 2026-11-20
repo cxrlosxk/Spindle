@@ -1104,6 +1104,57 @@ class WindowsQueueUIA:
             )
         self._invoke(target)
 
+    def _capture_failed_queue(self, window):
+        """Capture actual queue controls when Apple shows an unverified insert.
+
+        User diagnostics showed a song visibly in Manually Added while the
+        UIA queue matcher reported no new row. Capture identifiers and element
+        geometry, never private track/artist metadata or account names.
+        """
+        try:
+            now = time.monotonic()
+            if now - getattr(self, '_last_queue_trace_at', -10000) < 600:
+                return ''
+            from .diagnostics import inspect_window
+            from .settings import data_dir
+            from datetime import datetime, timezone
+            import json
+            report = inspect_window(self)
+            report['failure_context'] = {
+                'stage': 'native-queue-insertion-not-confirmed',
+                'queue_candidate_control_ids': sorted(set(
+                    c.get('automation_id', '') for c in report.get('controls', [])
+                    if 'queue' in c.get('automation_id', '').casefold()
+                ))[:30],
+                'empty_queue_label_exposed': any(
+                    c.get('name', '') == 'No upcoming songs.'
+                    for c in report.get('controls', [])
+                ),
+                'playing_next_label_exposed': any(
+                    c.get('name', '') == 'Playing Next'
+                    for c in report.get('controls', [])
+                ),
+                'no_song_or_account_details_saved': True,
+            }
+            folder = data_dir() / 'diagnostics'
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
+            path = folder / ('spindle-queue-failure-' + stamp + '.json')
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False),
+                           encoding='utf-8')
+            tmp.replace(path)
+            self._last_queue_trace_at = now
+            prior = sorted(folder.glob('spindle-queue-failure-*.json'))
+            for old in prior[:-8]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            return 'Queue trace: ' + path.name
+        except Exception:
+            return ''
+
     def deliver(self, track: Track, first_request: bool = False) -> Delivery:
         """Attempt native insertion with a named failure stage for diagnostics."""
         stage = 'locate Apple Music'
@@ -1138,8 +1189,11 @@ class WindowsQueueUIA:
                         'Verified title and artist in Apple Music Playing Next.'
                         + (' ' + self._selection_note if self._selection_note else ''),
                     )
+            trace = self._capture_failed_queue(window)
             return Delivery(
-                False, 'Apple Music did not show the new song in Playing Next.'
+                False,
+                (trace + ' | ' if trace else '')
+                + 'Apple Music did not expose a newly matching song in Playing Next.'
             )
         except Exception as exc:
             raise NativeQueueError(
