@@ -60,3 +60,36 @@ No Twitch tokens or credentials belong in your repository, in settings JSON, or 
 - [Python UIAutomation for Windows](https://github.com/yinkaisheng/Python-UIAutomation-for-Windows) supports value and invoke patterns without mouse or keyboard injection.
 
 This project is not affiliated with or endorsed by Apple or Twitch. Music subscriptions do not grant broadcasting rights; streamer remains responsible for music licensing and platform rules.
+
+## Diagnosing Apple Music queue integration (v0.4.0)
+
+The official Apple Music Windows app has no supported public Up Next queue API.
+Windows UI Automation is experimental, varies across app versions/window layouts,
+and may fail even when the song is already visible. **Never assume a song was added
+unless Spindle verifies it in Apple's actual Playing Next list.**
+
+To avoid further blind selector changes:
+
+1. In the latest Spindle Windows preview, look for **v0.4.0 DIAGNOSTICS**
+   in the lower-right footer.
+2. Position Apple Music the way you normally stream (including a separate
+   monitor, maximized if preferred) with Search **closed**.
+3. Click **Inspect Apple Music** in Spindle's Activity card. It saves a
+   read-only JSON file and opens the diagnostics folder.
+4. Open Search **manually** in Apple Music and collect a second file.
+5. If useful, open a song's **More (...)** menu, then collect a third file.
+   This step is read-only on Spindle's side; the menu is opened manually.
+6. Share the JSON files with the developer. The reports show the real
+   accessibility control IDs, positions, menu patterns, and monitor geometry,
+   allowing precise selectors to replace guesses.
+
+Reports are saved under `%LOCALAPPDATA%\\Spindle\\diagnostics`. They are
+created **only when you click Inspect Apple Music**. They are never uploaded by
+Spindle. Music titles, artist names, account names, and playlist names are
+redacted; review the files yourself before sharing.
+
+The app's activity log now identifies whether insertion failed while reading
+the queue, finding the song, opening More, choosing Play Next/Last, or verifying
+the result. This is particularly helpful for COM failures on multi-monitor
+setups. UIA snapshots and CI tests do **not** establish real-world insertion
+success: that still requires testing in a signed-in Apple Music instance.
