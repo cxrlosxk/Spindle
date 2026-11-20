@@ -813,9 +813,9 @@ class WindowsQueueUIA:
             submission += '+focused-enter'
         trace = self._capture_failed_search(window, submission)
         raise NativeQueueError(
-            'Apple Music did not open full search results after '
-            + submission + '. The autocomplete suggestions are not full '
-            'results.' + trace
+            (trace.strip() + ' | ' if trace else '')
+            + 'Apple Music did not show a newly submitted full search-results '
+            'page after ' + submission + '. Autocomplete is not a full search.'
         )
 
     def _open_all_songs(self, window):
