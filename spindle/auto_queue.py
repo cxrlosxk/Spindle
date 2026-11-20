@@ -14,7 +14,7 @@ from .models import Track
 
 class AutoQueueService:
     def __init__(self, store, native_queue, is_enabled, on_status=None,
-                 on_change=None, retry_seconds=12.0, max_retry_seconds=180.0):
+                 on_change=None, retry_seconds=8.0, max_retry_seconds=60.0):
         self.store = store
         self.native_queue = native_queue
         self.is_enabled = is_enabled
