@@ -389,7 +389,7 @@ class WindowsQueueUIA:
                     continue
                 if (name == 'search' or name in (
                         'search apple music', 'search music', 'search in apple music'
-                    ) or aid in ('searchbutton', 'searchnavitem',
+                    ) or aid in ('searchbutton', 'search_button', 'searchnavitem',
                                    'searchnavigationitem', 'navviewsearchbutton')
                         or aid.endswith('searchnavigationviewitem')):
                     candidates.append(element)
@@ -439,7 +439,12 @@ class WindowsQueueUIA:
 
     def _open_compact_search(self, window):
         """Reveal the hidden search box using UIA, without typing or clicking."""
-        candidates = self._search_entry_candidates(window)
+        # Allow a freshly restored WinUI window to rebuild its accessibility
+        # tree; immediately after SW_SHOWNOACTIVATE the tree can still be stale.
+        candidates = self._wait(
+            lambda: self._search_entry_candidates(window) or None,
+            2.0, 0.15,
+        ) or []
         if not candidates:
             if self._focused_open_search():
                 box = self._wait(
