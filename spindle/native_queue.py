@@ -305,6 +305,7 @@ class WindowsQueueUIA:
         try:
             pattern = control.GetInvokePattern()
             if pattern is not None:
+                self._assert_focus_safe()
                 pattern.Invoke(waitTime=0)
                 return
         except Exception as exc:
@@ -312,6 +313,7 @@ class WindowsQueueUIA:
         try:
             legacy = control.GetLegacyIAccessiblePattern()
             if legacy is not None:
+                self._assert_focus_safe()
                 legacy.DoDefaultAction(waitTime=0)
                 return
         except Exception as exc:
@@ -368,6 +370,7 @@ class WindowsQueueUIA:
         control = self._control(element)
         # Apple Music sometimes exposes TogglePattern without InvokePattern.
         if control.GetPattern(10015):
+            self._assert_focus_safe()
             control.GetTogglePattern().Toggle(waitTime=0)
         else:
             self._invoke(element)
@@ -611,6 +614,9 @@ class WindowsQueueUIA:
                 pattern = getattr(control, method)()
                 if pattern is None:
                     continue
+                # The user may have switched back to a game while the
+                # search control was being located.
+                self._assert_focus_safe()
                 if pattern_name == 'invoke':
                     pattern.Invoke(waitTime=0)
                 elif pattern_name == 'select':
@@ -652,6 +658,7 @@ class WindowsQueueUIA:
                 setter = getattr(pattern, 'SetValue', None)
                 if setter is None:
                     continue
+                self._assert_focus_safe()
                 setter(query, waitTime=0)
                 return
             except Exception as exc:
@@ -687,6 +694,7 @@ class WindowsQueueUIA:
         try:
             pattern = self._control(songs).GetScrollItemPattern()
             if pattern:
+                self._assert_focus_safe()
                 pattern.ScrollIntoView(waitTime=0)
                 return True
         except Exception:
