@@ -391,3 +391,33 @@ def test_menu_refuses_play_now_and_ambiguous_queue_actions():
     adapter._visible_menu_items = lambda window: [candidate, candidate]
     with pytest.raises(NativeQueueError, match='No unambiguous'):
         adapter._select_queue_action(object(), first_request=True)
+
+
+def test_invoke_uses_winui_legacy_default_action_when_invoke_missing():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    invoked = []
+    class Pattern:
+        def DoDefaultAction(self, **kwargs):
+            invoked.append('legacy')
+    control = SimpleNamespace(
+        GetInvokePattern=lambda: None,
+        GetLegacyIAccessiblePattern=lambda: Pattern(),
+    )
+    adapter._control = lambda element: control
+    adapter._invoke(object())
+    assert invoked == ['legacy']
+
+
+def test_invoke_never_uses_mouse_or_keyboard_on_missing_patterns():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA, NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    control = SimpleNamespace(
+        GetInvokePattern=lambda: None,
+        GetLegacyIAccessiblePattern=lambda: None,
+    )
+    adapter._control = lambda element: control
+    with pytest.raises(NativeQueueError, match='no usable Invoke or Legacy'):
+        adapter._invoke(object())
