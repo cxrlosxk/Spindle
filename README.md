@@ -145,14 +145,27 @@ same catalog track are still rejected to prevent unintended duplicates.
 Spindle identifies the stream owner using the authenticated Twitch user ID,
 not the displayed Twitch name.
 
-In **Settings**, the default **Keep games and other apps in focus** option
-uses background-only Windows UI Automation and app-scoped messages. It never
-intentionally calls SetForegroundWindow, sends global key strokes or focuses
-Apple Music's search box. When Apple Music was minimized, Spindle may briefly
-restore it **without activation** and return it to its previous state.
-This best-effort mode can still fail if Apple Music itself demands focus for
-search submission; failed requests remain pending and are retried without
-streamer approval.
+**Focus protection regression fix (v0.5.4):** A WinUI InvokePattern or
+TogglePattern can bring Apple Music forward even without an explicit
+SetForegroundWindow call. Accordingly, game-safe mode now **defers ALL
+Apple Music UI operations while another application is foregrounded**.
+It does not restore the minimized player, open Search, toggle Playing Next,
+change text, or invoke any menu action over Marvel Rivals, Chrome or another
+active app. Requests remain pending in the local database and resume
+automatically when Apple Music becomes foreground. This ensures Spindle
+itself doesn't deliberately steal focus, but also means **it cannot insert
+songs while the game remains focused** through the existing UIA approach.
+There is no supported Windows Apple Music Up Next API to guarantee both
+uninterrupted game focus and queue insertion.
+
+**Duplicate-insertion regression fix (v0.5.4):** Before issuing a native
+request, Spindle persists its state as `verifying`. If an Add to Queue
+action could have succeeded but Apple Music's queue cannot be inspected
+reliably, the request remains in verification-only state. Spindle never
+re-sends the insertion automatically; it checks the existing queue and
+waits for trustworthy confirmation. The state survives app restarts. The
+optional Retry button now wakes the same serialized worker instead of
+starting a second insertion that could race the first.
 
 For Apple Music versions that require a real focused Enter key, the separate
 **Compatibility mode** option remains available. That mode can temporarily
@@ -161,10 +174,10 @@ exclusive. Any saved focus-handoff preference from earlier versions is
 overridden by the new default game-safe setting until the streamer explicitly
 selects compatibility.
 
-**Important:** The official Apple Music Windows application has no supported
-public native Up Next queue-control API. Background queueing is not guaranteed
-on every installation. The actual end-to-end test is a viewer !sr while
-Marvel Rivals (or another game) remains foreground: confirm both that the
-request appears in Apple's Playing Next and that the game never loses focus.
-An unattended request may remain pending in game-safe mode on an app build
-that only accepts a foreground search submission.
+**Tradeoff to test:** With focus protection on, send a viewer `!sr`
+while Marvel Rivals or a browser minigame has focus. The game should remain
+uninterrupted and the song should remain pending. Bring Apple Music to the
+foreground after gameplay; Spindle should then resume without requiring
+song-by-song approval. With compatibility mode on instead, the song can be
+added during gameplay, but Apple Music may interrupt the game. This is a
+known integration limitation rather than a hidden toggle.
