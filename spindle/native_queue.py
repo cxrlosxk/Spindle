@@ -1250,7 +1250,10 @@ class WindowsQueueUIA:
             return Delivery(
                 False,
                 (trace + ' | ' if trace else '')
-                + 'Apple Music did not expose a newly matching song in Playing Next.'
+                + 'Apple Music may have accepted Add to Queue, but verification '
+                  'is incomplete. Spindle will not insert this request again '
+                  'until the result has been reconciled.',
+                uncertain=True,
             )
         except Exception as exc:
             trace = ''
@@ -1260,10 +1263,14 @@ class WindowsQueueUIA:
                 )
             elif stage == 'verify Playing Next after insertion':
                 trace = self._capture_failed_queue(locals().get('window'))
-            raise NativeQueueError(
-                (trace.strip() + ' | ' if trace else '')
-                + f'{stage}: {type(exc).__name__}: {str(exc)[:170]}'
-            ) from exc
+            message = ((trace.strip() + ' | ' if trace else '')
+                       + f'{stage}: {type(exc).__name__}: {str(exc)[:170]}')
+            if stage in ('choose Play Next or Play Last',
+                         'verify Playing Next after insertion'):
+                # The menu action may have reached Music before an exception.
+                # Never convert this uncertain outcome into another Add.
+                return Delivery(False, message, uncertain=True)
+            raise NativeQueueError(message) from exc
         finally:
             self._finish_window()
 
