@@ -299,7 +299,12 @@ class WindowsQueueUIA:
         items = self._all(row, kind=self.types.TextControl)
         texts = []
         for item in items:
-            name = (item.CurrentName or '').strip()
+            try:
+                name = (item.CurrentName or '').strip()
+            except Exception as exc:
+                if self._transient_uia_error(exc):
+                    continue
+                raise
             if name and not all(0xE000 <= ord(c) <= 0xF8FF for c in name):
                 texts.append(name)
         return texts
@@ -307,8 +312,14 @@ class WindowsQueueUIA:
     def _playing_next(self, window):
         containers = self._all(window, kind=self.types.ListControl)
         for lst in containers:
-            if (lst.CurrentAutomationId or '').startswith('PlayQueueListView'):
-                return lst
+            try:
+                aid = lst.CurrentAutomationId or ''
+                if aid.startswith('PlayQueueListView'):
+                    return lst
+            except Exception as exc:
+                # WinUI may replace a queue ListView during verification.
+                if not self._transient_uia_error(exc):
+                    raise
         return None
 
     def _press_queue_toggle(self, element):
