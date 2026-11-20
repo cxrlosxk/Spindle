@@ -10,6 +10,7 @@ import math
 import sys
 import threading
 import webbrowser
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -149,6 +150,7 @@ class Bus(QObject):
     chat = Signal(str)
     device_code = Signal(str, str)
     local_result = Signal(str)
+    diagnostics_finished = Signal(str)
 
 
 class SettingsDialog(QDialog):
@@ -227,6 +229,7 @@ class SpindleWindow(QMainWindow):
         self.bus.queue_changed.connect(self.refresh_queue)
         self.bus.chat.connect(self.log)
         self.bus.local_result.connect(self.local_done)
+        self.bus.diagnostics_finished.connect(self.diagnostics_done)
         self.bus.device_code.connect(self.show_code)
         self.refresh_queue()
         self.start_monitor()
@@ -328,7 +331,17 @@ class SpindleWindow(QMainWindow):
 
         activity_card = QFrame(); activity_card.setObjectName('card'); activity_card.setMinimumHeight(220)
         a_col = layout_column(activity_card, 21, 10)
-        a_col.addWidget(label('Activity', 'section'))
+        activity_header = QHBoxLayout()
+        activity_header.addWidget(label('Activity', 'section'))
+        activity_header.addStretch(1)
+        self.diagnostics_button = button('Inspect Apple Music', 'ghost')
+        self.diagnostics_button.setToolTip(
+            'Save a read-only, privacy-redacted report of Apple Music controls. '
+            'Nothing is uploaded automatically.'
+        )
+        self.diagnostics_button.clicked.connect(self.save_diagnostics)
+        activity_header.addWidget(self.diagnostics_button)
+        a_col.addLayout(activity_header)
         self.activity_label = label('Your recent activity will appear here.', 'muted', True)
         self.activity_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         a_col.addWidget(self.activity_label, 1)
@@ -438,6 +451,40 @@ class SpindleWindow(QMainWindow):
         if self.store.change(request_id, action):
             self.log(f'Request #{request_id} marked {action}.')
             self.refresh_queue()
+
+    def save_diagnostics(self):
+        """Collect controls in a background COM worker; leave Apple Music alone."""
+        self.diagnostics_button.setEnabled(False)
+        self.log('Inspecting Apple Music controls without changing playback…')
+
+        def work():
+            try:
+                report = self.native_queue.diagnose()
+                # Avoid modifying the report with music metadata or credentials.
+                folder = data_dir() / 'diagnostics'
+                folder.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+                path = folder / f'apple-music-controls-{stamp}.json'
+                tmp = path.with_suffix('.tmp')
+                tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
+                tmp.replace(path)
+                self.bus.diagnostics_finished.emit(str(path))
+            except Exception as exc:
+                self.bus.diagnostics_finished.emit(
+                    f'ERROR: Apple Music inspection could not be saved ({type(exc).__name__}).'
+                )
+
+        threading.Thread(target=work, daemon=True, name='InspectAppleMusic').start()
+
+    def diagnostics_done(self, result: str):
+        self.diagnostics_button.setEnabled(True)
+        if result.startswith('ERROR:'):
+            self.log(result)
+            return
+        path = Path(result)
+        self.log('Apple Music inspection saved to ' + str(path))
+        self.log('You can upload that JSON to diagnose native queue controls. No upload was performed.')
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def send_to_apple_music(self, request_id: int):
         # Explicit retry is useful for requests made before native queue sync
