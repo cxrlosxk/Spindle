@@ -579,16 +579,19 @@ class WindowsQueueUIA:
                 aid = (button.CurrentAutomationId or '').casefold()
             except Exception:
                 continue
-            if self._usable_result(button) and (
-                'more' in identity or aid == 'morebutton'
-            ):
+            if identity == 'more' or aid == 'morebutton':
                 named.append(button)
-        if len(named) != 1:
+        visible = [b for b in named if self._usable_result(b)]
+        # WinUI can expose a valid InvokePattern for a More button even when
+        # its visual bounds are zero until pointer hover. It is still scoped
+        # to the already-verified exact song row, not a guessed global button.
+        candidates = visible if len(visible) == 1 else named
+        if len(candidates) != 1:
             raise NativeQueueError(
-                'Apple Music did not expose one identifiable, visible '
-                'song-specific More button. No other button was pressed.'
+                'Apple Music did not expose exactly one song-specific More '
+                'button. No unrelated button was pressed.'
             )
-        self._invoke(named[0])
+        self._invoke(candidates[0])
 
     def _visible_menu_items(self, window):
         """Find context menus that WinUI may host outside the music window.
