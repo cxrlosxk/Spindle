@@ -132,3 +132,39 @@ Test with the official Microsoft Store app: play a song from a playlist,
 minimize Apple Music, issue `!sr` from Twitch, and verify the next track and
 subsequent return to the playlist. GitHub Actions cannot verify these live
 Windows player interactions; only a signed-in workstation can.
+
+
+## Game-safe queueing and broadcaster privileges (v0.5.3)
+
+**The authenticated Twitch broadcaster has unlimited unique song requests**:
+there is no request cooldown, no per-viewer song count limit, and no global
+queue-count limit for the broadcaster. The same exemption applies to the
+streamer's local **Find a song** action. Viewers and moderators still follow
+the configured queue and cooldown limits. Repeated requests for the exact
+same catalog track are still rejected to prevent unintended duplicates.
+Spindle identifies the stream owner using the authenticated Twitch user ID,
+not the displayed Twitch name.
+
+In **Settings**, the default **Keep games and other apps in focus** option
+uses background-only Windows UI Automation and app-scoped messages. It never
+intentionally calls SetForegroundWindow, sends global key strokes or focuses
+Apple Music's search box. When Apple Music was minimized, Spindle may briefly
+restore it **without activation** and return it to its previous state.
+This best-effort mode can still fail if Apple Music itself demands focus for
+search submission; failed requests remain pending and are retried without
+streamer approval.
+
+For Apple Music versions that require a real focused Enter key, the separate
+**Compatibility mode** option remains available. That mode can temporarily
+take keyboard focus away from a full-screen game. These modes are mutually
+exclusive. Any saved focus-handoff preference from earlier versions is
+overridden by the new default game-safe setting until the streamer explicitly
+selects compatibility.
+
+**Important:** The official Apple Music Windows application has no supported
+public native Up Next queue-control API. Background queueing is not guaranteed
+on every installation. The actual end-to-end test is a viewer !sr while
+Marvel Rivals (or another game) remains foreground: confirm both that the
+request appears in Apple's Playing Next and that the game never loses focus.
+An unattended request may remain pending in game-safe mode on an app build
+that only accepts a foreground search submission.
