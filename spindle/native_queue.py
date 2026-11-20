@@ -693,7 +693,7 @@ class WindowsQueueUIA:
 
 class NativeQueueBridge:
     """Serializes all native UIA calls to one COM-initialized, daemon thread."""
-    def __init__(self, backend_factory=None, timeout=18.0):
+    def __init__(self, backend_factory=None, timeout=35.0):
         self.backend_factory = backend_factory
         self.timeout = timeout
         self.tasks = queue.Queue()
