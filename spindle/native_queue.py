@@ -769,10 +769,13 @@ class WindowsQueueUIA:
                         aid = (elem.CurrentAutomationId or '').strip().casefold()
                     except Exception:
                         continue
-                    if (name in ('see all songs', 'view all songs',
-                                 'show all songs', 'all songs')
-                            or aid in ('seeallsongs', 'showallsongs',
-                                       'viewallsongs')):
+                    scoped_all = (
+                        root is section and name in ('see all', 'show all', 'view all')
+                    )
+                    if (scoped_all or name in (
+                            'see all songs', 'view all songs',
+                            'show all songs', 'all songs',
+                        ) or aid in ('seeallsongs', 'showallsongs', 'viewallsongs')):
                         candidates.append(elem)
             if candidates:
                 break
