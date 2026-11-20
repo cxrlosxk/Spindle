@@ -190,11 +190,15 @@ class TwitchClient:
             return
         sender_name = event.get('chatter_user_name') or 'viewer'
         badges = {badge.get('set_id') for badge in event.get('badges', [])}
-        is_moderator = sender_id == self.user_id or bool({'moderator', 'broadcaster'} & badges)
+        # Trust Twitch's authenticated sender ID, not the visible username.
+        # Mods remain moderators but do not inherit broadcaster exemptions.
+        is_broadcaster = bool(self.user_id and sender_id == self.user_id)
+        is_moderator = is_broadcaster or bool({'moderator', 'broadcaster'} & badges)
         self.on_message(f'Received from @{sender_name}: {message}')
         try:
             response = await asyncio.to_thread(
-                self.engine.handle, sender_id, sender_name, message, is_moderator,
+                self.engine.handle, sender_id, sender_name, message,
+                is_moderator, is_broadcaster,
             )
         except Exception as exc:
             self.on_status(f'Could not process {command}: {str(exc)[:160]}')
