@@ -116,15 +116,42 @@ class WindowsQueueUIA:
         return [arr.GetElement(i) for i in range(arr.Length)] if arr else []
 
     def _control(self, element):
-        return self.auto.Control.CreateControlFromElement(element)
+        """Wrap a live UIA element, including unknown/custom WinUI control types.
+
+        Control.CreateControlFromElement() returns None for unknown types.
+        Never turn that into an opaque NoneType.GetValuePattern exception.
+        """
+        if element is None:
+            raise NativeQueueError('Apple Music accessibility element was not found.')
+        try:
+            control = self.auto.Control.CreateControlFromElement(element)
+            if control is None:
+                # The generic Control accepts a raw IUIAutomationElement and can
+                # still expose Value/Invoke/Selection patterns for custom WinUI types.
+                control = self.auto.Control(element=element)
+            return control
+        except Exception as exc:
+            raise NativeQueueError(
+                f'Apple Music accessibility element changed while reading it '
+                f'({type(exc).__name__}); retry the request.'
+            ) from exc
 
     def _invoke(self, element):
         if element is None:
-            raise NativeQueueError('Apple Music control not found.')
-        pattern = self._control(element).GetInvokePattern()
+            raise NativeQueueError('Apple Music action control was not found.')
+        control = self._control(element)
+        try:
+            pattern = control.GetInvokePattern()
+        except Exception as exc:
+            raise NativeQueueError(
+                f'Cannot read Apple Music action accessibility pattern: {type(exc).__name__}.'
+            ) from exc
         if not pattern:
-            raise NativeQueueError('Apple Music control does not support accessibility Invoke.')
-        pattern.Invoke(waitTime=0)
+            raise NativeQueueError('Apple Music action control has no accessibility Invoke pattern.')
+        try:
+            pattern.Invoke(waitTime=0)
+        except Exception as exc:
+            raise NativeQueueError(f'Apple Music action failed: {type(exc).__name__}.') from exc
 
     @staticmethod
     def _wait(fn, seconds=3.0, every=0.12):
@@ -243,6 +270,23 @@ class WindowsQueueUIA:
                 except Exception:
                     pass
 
+    def _visible_search_field(self, window):
+        """Reject an EditControl left in the UIA tree after Search is closed."""
+        for element in self._all(window, aid='TextBox', kind=self.types.EditControl):
+            try:
+                if element.CurrentIsOffscreen:
+                    continue
+                rect = element.CurrentBoundingRectangle
+                if rect and (rect.right <= rect.left or rect.bottom <= rect.top):
+                    continue
+            except AttributeError:
+                # Lightweight test doubles do not always expose geometry.
+                pass
+            except Exception:
+                continue
+            return element
+        return None
+
     def _search_entry_candidates(self, window):
         """Locate the collapsed sidebar's Search item by accessible identity.
 
@@ -251,8 +295,13 @@ class WindowsQueueUIA:
         an arbitrary icon or an unrelated search result.
         """
         candidates = []
-        for kind in (self.types.ButtonControl, self.types.ListItemControl,
-                     self.types.TabItemControl):
+        kinds = [self.types.ButtonControl, self.types.ListItemControl,
+                 self.types.TabItemControl]
+        for optional in ('TreeItemControl', 'HyperlinkControl', 'CustomControl'):
+            kind = getattr(self.types, optional, None)
+            if kind is not None:
+                kinds.append(kind)
+        for kind in kinds:
             for element in self._all(window, kind=kind):
                 try:
                     name = (element.CurrentName or '').strip().casefold()
@@ -261,9 +310,11 @@ class WindowsQueueUIA:
                         continue
                 except Exception:
                     continue
-                if (name == 'search' or name in ('search apple music', 'search music')
-                        or aid in ('searchbutton', 'searchnavitem',
-                                   'searchnavigationitem', 'navviewsearchbutton')):
+                if (name == 'search' or name in (
+                        'search apple music', 'search music', 'search in apple music'
+                    ) or aid in ('searchbutton', 'searchnavitem',
+                                   'searchnavigationitem', 'navviewsearchbutton')
+                        or aid.endswith('searchnavigationviewitem')):
                     candidates.append(element)
         return candidates
 
@@ -321,10 +372,7 @@ class WindowsQueueUIA:
                 'Apple Music Search navigation cannot be activated through '
                 'Windows accessibility (' + ','.join(errors[:2]) + ').'
             )
-        box = self._wait(
-            lambda: self._find(window, aid='TextBox', kind=self.types.EditControl),
-            4.0, 0.15,
-        )
+        box = self._wait(lambda: self._visible_search_field(window), 4.0, 0.15)
         if box is None:
             raise NativeQueueError(
                 'Apple Music Search navigation was selected, but no search '
@@ -333,13 +381,22 @@ class WindowsQueueUIA:
         return box
 
     def _search_results(self, window, track: Track):
-        search = self._find(window, aid='TextBox', kind=self.types.EditControl)
+        search = self._visible_search_field(window)
         if search is None:
             search = self._open_compact_search(window)
-        value = self._control(search).GetValuePattern()
+        try:
+            value = self._control(search).GetValuePattern()
+        except NativeQueueError:
+            raise
+        except Exception as exc:
+            raise NativeQueueError(
+                f'Apple Music search field could not be accessed '
+                f'({type(exc).__name__}). Close and reopen Search, then retry.'
+            ) from exc
         if not value:
             raise NativeQueueError(
-                'Apple Music search field does not accept accessibility text input.'
+                'Apple Music search field has no accessibility Value pattern. '
+                'Open Search manually and retry.'
             )
         stale_content = self._find(window, name='Content', kind=self.types.GroupControl)
         stale_section = self._find(stale_content, name='Songs',
