@@ -215,3 +215,19 @@ def test_existing_install_upgrades_to_strict_focus_guard_once(tmp_path):
     assert not after.protect_foreground
     assert after.effective_focus_handoff
     assert after.strict_focus_guard_v054_initialized
+
+
+def test_missing_queue_menu_is_safe_to_retry_without_verification_lock():
+    from spindle.native_queue import NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._find_window = lambda: object()
+    adapter._queue_snapshot = lambda window: []
+    adapter._target_row = lambda *args: object()
+    adapter._open_more = lambda row: None
+    adapter._select_queue_action = lambda *args: (_ for _ in ()).throw(
+        NativeQueueError('No unambiguous Play Next menu item')
+    )
+    adapter._finish_window = lambda: None
+    with pytest.raises(NativeQueueError, match='No unambiguous Play Next'):
+        adapter.deliver(SONG, first_request=True)
+    assert not adapter._queue_action_requested
