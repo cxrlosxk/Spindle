@@ -20,6 +20,10 @@ class CommandEngine:
         self.native_queue = native_queue
         self.on_status = on_status or (lambda message: None)
         self._previous_playing_key = None
+        # When the desktop app runs, the background worker handles delivery.
+        # Keep direct native delivery for existing headless integration tests.
+        self.deferred_native_delivery = False
+        self.on_request_accepted = lambda request_id: None
 
     def set_current(self, current: Track | None):
         # Clear successfully queued songs only on a *new* playing-track transition.
@@ -81,6 +85,12 @@ class CommandEngine:
                     max_queue=self.settings.max_queue, max_per_viewer=self.settings.max_per_viewer,
                     cooldown_seconds=self.settings.cooldown_seconds)
                 self.on_change()
+                if self.settings.native_queue_enabled and self.deferred_native_delivery:
+                    self.on_request_accepted(request_id)
+                    return (
+                        f'♫ Request #{request_id} accepted: {track.title} — {track.artist}. '
+                        'Spindle will add it to Apple Music automatically.'
+                    )
                 if self.settings.native_queue_enabled and self.native_queue is not None:
                     delivery = self.native_queue.enqueue(track, first_request=not bool(self.store.queued()))
                     if delivery.verified:
@@ -90,7 +100,10 @@ class CommandEngine:
                         return f'♫ Added to Apple Music Up Next: {track.title} — {track.artist} (requested by @{user_name})'
                     self.on_status(f'Native queue could not be verified: {delivery.reason}')
                     return f'♫ Request saved in Spindle: {track.title} — {track.artist}. Could not verify Apple Music Up Next.'
-                return f'♫ Request saved in Spindle: {track.title} — {track.artist}. Not yet in Apple Music Up Next.'
+                return (
+                    f'♫ Request #{request_id} saved: {track.title} — {track.artist}. '
+                    'Automatic Apple Music queueing is disabled in Spindle Settings.'
+                )
             except (CatalogError, QueueError) as exc:
                 return str(exc)
 
