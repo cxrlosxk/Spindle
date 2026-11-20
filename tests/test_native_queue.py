@@ -730,3 +730,43 @@ def test_search_access_keys_refuse_to_type_if_foreground_stays_on_game():
     )
     adapter._wait = lambda fn, *args, **kw: fn()
     assert adapter._focused_open_search() is False
+
+
+def test_retried_song_already_in_native_queue_is_never_added_again():
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._find_window = lambda: object()
+    adapter._queue_snapshot = lambda window: [('needy', 'Ariana Grande')]
+    adapter._target_row = lambda *args: pytest.fail('Do not duplicate queued song')
+    adapter._finish_window = lambda: None
+    delivered = adapter.deliver(Track('needy', 'Ariana Grande'), True)
+    assert delivered.verified
+    assert 'no duplicate' in delivered.reason
+
+
+def test_read_only_queue_lookup_uses_serial_native_bridge():
+    from spindle.native_queue import NativeQueueBridge, Delivery
+    class Backend:
+        def deliver(self, track, first_request=False):
+            pytest.fail('Verification must not insert a song')
+        def verify_present(self, track):
+            return Delivery(track.title == 'AMEN', 'present')
+    bridge = NativeQueueBridge(lambda: Backend(), timeout=3)
+    result = bridge.check_present(SONG)
+    assert result.verified
+    assert result.reason == 'present'
+
+
+def test_temporarily_restored_music_is_reminimized_without_activation():
+    from spindle.native_queue import WindowsQueueUIA
+    from types import SimpleNamespace
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    calls = []
+    adapter.user32 = SimpleNamespace(
+        IsWindow=lambda hwnd: True,
+        ShowWindowAsync=lambda hwnd, state: calls.append((hwnd, state)),
+    )
+    adapter._temporarily_restored_hwnd = 9001
+    adapter._finish_window()
+    assert calls == [(9001, 7)]
+    assert adapter._temporarily_restored_hwnd is None
