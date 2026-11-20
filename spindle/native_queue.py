@@ -347,6 +347,18 @@ class WindowsQueueUIA:
                                    'searchnavigationitem', 'navviewsearchbutton')
                         or aid.endswith('searchnavigationviewitem')):
                     candidates.append(element)
+        if not candidates:
+            # The actual multi-monitor UIA capture supplied for this app
+            # identifies the sidebar search container as a GroupControl named
+            # AutoSuggestBox with an InvokePattern. Some compact layouts do
+            # not expose a separately named magnifying-glass Button.
+            for element in self._all(window, kind=self.types.GroupControl):
+                try:
+                    if (element.CurrentClassName == 'AutoSuggestBox'
+                            and self._usable_result(element)):
+                        candidates.append(element)
+                except Exception:
+                    continue
         return candidates
 
     def _open_compact_search(self, window):
