@@ -970,6 +970,21 @@ class WindowsQueueUIA:
         finally:
             self._finish_window()
 
+    def verify_present(self, track: Track) -> Delivery:
+        """Read Playing Next without invoking any search or queue action."""
+        try:
+            window = self._find_window()
+            contents = self._queue_snapshot(window)
+            existing = any(strict_track_match(title, artist, track)
+                           for title, artist in contents)
+            return Delivery(
+                existing,
+                'Track already visible in Apple Music Playing Next.'
+                if existing else 'Track not yet visible in Apple Music Playing Next.',
+            )
+        finally:
+            self._finish_window()
+
     def inspect_diagnostics(self):
         """Inspect without sending input, then restore the prior window state."""
         from .diagnostics import inspect_window
@@ -1016,6 +1031,8 @@ class NativeQueueBridge:
                         raise NativeQueueError(startup_error)
                     if is_probe:
                         result = backend.inspect_diagnostics()
+                    elif first_request == '__verify_only__':
+                        result = backend.verify_present(track)
                     else:
                         if self.backend_factory is None:
                             backend.allow_focus_handoff = self.allow_focus_handoff
@@ -1055,6 +1072,24 @@ class NativeQueueBridge:
                 "schema": 1, "read_only": True,
                 "error": "Apple Music accessibility inspection timed out.",
             }
+
+    def check_present(self, track: Track) -> Delivery:
+        """Safe read-only check before retrying an uncertain insertion."""
+        if self.backend_factory is None and sys.platform != 'win32':
+            return Delivery(False, 'Windows is required.')
+        with self.lock:
+            if not self.worker:
+                self.worker = threading.Thread(
+                    target=self._run, daemon=True, name='AppleMusicQueueUIA',
+                )
+                self.worker.start()
+        future = Future()
+        self.tasks.put((track, '__verify_only__', future))
+        try:
+            return future.result(timeout=min(self.timeout, 20.0))
+        except FutureTimeout:
+            future.cancel()
+            return Delivery(False, 'Could not verify Apple Music Playing Next.')
 
     def enqueue(self, track: Track, first_request: bool = False) -> Delivery:
         if self.backend_factory is None and sys.platform != 'win32':
