@@ -345,3 +345,49 @@ def test_hidden_search_field_is_ignored_until_sidebar_is_open():
     assert adapter._visible_search_field(object()) is None
     adapter._all = lambda root, **kw: [hidden, shown]
     assert adapter._visible_search_field(object()) is shown
+
+
+def test_winui_queue_menu_in_separate_same_process_popup():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.types = SimpleNamespace(MenuItemControl='menuitem')
+    main = SimpleNamespace(CurrentProcessId=42, CurrentIsOffscreen=False)
+    own_popup = SimpleNamespace(CurrentProcessId=42, CurrentIsOffscreen=False)
+    other_app = SimpleNamespace(CurrentProcessId=7, CurrentIsOffscreen=False)
+    safe = SimpleNamespace(CurrentName='Play Next', CurrentIsOffscreen=False)
+    unsafe = SimpleNamespace(CurrentName='Play Next', CurrentIsOffscreen=False)
+    desktop = object()
+    adapter.api = SimpleNamespace(GetRootElement=lambda: desktop)
+    def all_items(root, *, kind=None, scope=4):
+        if root is desktop:
+            return [main, own_popup, other_app]
+        if root is own_popup:
+            return [safe]
+        if root is other_app:
+            return [unsafe]
+        return []
+    adapter._all = all_items
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    invoked = []
+    adapter._invoke = lambda item: invoked.append(item)
+    adapter._select_queue_action(main, first_request=True)
+    assert invoked == [safe]
+
+
+def test_menu_refuses_play_now_and_ambiguous_queue_actions():
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA, NativeQueueError
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter._wait = lambda fn, *args, **kwargs: fn()
+    adapter._visible_menu_items = lambda window: [
+        SimpleNamespace(CurrentName='Play', CurrentIsOffscreen=False),
+        SimpleNamespace(CurrentName='Play Now', CurrentIsOffscreen=False),
+    ]
+    adapter._invoke = lambda item: pytest.fail('Must never start playback now')
+    with pytest.raises(NativeQueueError, match='No unambiguous Play Next'):
+        adapter._select_queue_action(object(), first_request=True)
+    candidate = SimpleNamespace(CurrentName='Play Next', CurrentIsOffscreen=False)
+    adapter._visible_menu_items = lambda window: [candidate, candidate]
+    with pytest.raises(NativeQueueError, match='No unambiguous'):
+        adapter._select_queue_action(object(), first_request=True)
