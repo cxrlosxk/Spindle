@@ -600,7 +600,11 @@ class WindowsQueueUIA:
                 setter(query, waitTime=0)
                 return
             except Exception as exc:
-                failures.append(method + ': ' + type(exc).__name__)
+                reason = (
+                    'NULL COM pointer' if self._transient_uia_error(exc)
+                    else type(exc).__name__
+                )
+                failures.append(method + ': ' + reason)
         raise NativeQueueError(
             'Search field has no working accessibility SetValue pattern'
             + (' (' + ', '.join(failures) + ')' if failures else '')
@@ -826,7 +830,20 @@ class WindowsQueueUIA:
             search = self._open_compact_search(window)
         query = query_override or f'{track.title} {track.artist}'
         previous = self._search_page_state(window)
-        self._set_search_text(search, query)
+        try:
+            self._set_search_text(search, query)
+        except NativeQueueError as exc:
+            if 'NULL COM pointer' not in str(exc):
+                raise
+            # WinUI can invalidate the EditControl after unminimizing Music.
+            # Resolve a *fresh* field rather than writing into an old pointer.
+            time.sleep(0.2)
+            window = self._rebind_root(window)
+            search = self._visible_search_field(window)
+            if search is None:
+                search = self._open_compact_search(window)
+            previous = self._search_page_state(window)
+            self._set_search_text(search, query)
         submission = self._submit_search(window)
         start = time.monotonic()
         scrolled = False
