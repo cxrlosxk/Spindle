@@ -49,8 +49,8 @@ def test_command_engine_distinguishes_pending_from_playing(tmp_path):
     engine.set_current(Track('Fantasy', 'Mariah Carey', playing=True))
     assert 'Mariah Carey' in engine.handle('1','fan','!song')
     response = engine.handle('1','fan','!sr AMEN Beyonce')
-    assert 'Spindle request queue' in response
-    assert 'Apple Music Up Next yet' in response
+    assert 'saved in Spindle' in response
+    assert 'Not yet in Apple Music Up Next' in response
     assert 'Beyoncé' in engine.handle('2','other','!queue')
     assert engine.handle('1','fan','!unrequest').endswith('was removed.')
     q.close()

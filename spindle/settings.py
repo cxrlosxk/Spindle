@@ -21,6 +21,7 @@ class Settings:
     cooldown_seconds: int = 90
     max_duration_minutes: int = 12
     allow_explicit: bool = True
+    native_queue_enabled: bool = False  # Explicit opt-in until tested on Apple Music for Windows.
 
     @classmethod
     def load(cls, directory: Path | None = None) -> 'Settings':

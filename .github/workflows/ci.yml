@@ -29,9 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r requirements.txt "pyinstaller>=6.11"
+      - run: python -m pip install -r requirements.txt pyinstaller>=6.11
       - name: Build standalone Windows preview
-        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name Spindle --hidden-import=keyring.backends.Windows --collect-submodules winsdk app.py
+        run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name Spindle --hidden-import=keyring.backends.Windows --collect-submodules winsdk --collect-submodules uiautomation --collect-submodules comtypes app.py
       - name: Package preview
         shell: pwsh
         run: Compress-Archive -Path 'dist/Spindle/*' -DestinationPath 'Spindle-Windows-preview.zip'

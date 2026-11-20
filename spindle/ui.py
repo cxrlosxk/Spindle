@@ -28,6 +28,8 @@ from .commands import CommandEngine
 from .queue_store import QueueStore
 from .settings import Settings, data_dir
 from .twitch import TwitchClient
+from .native_queue import NativeQueueBridge
+from .models import Track
 
 BG = '#0d1014'
 SURFACE = '#171b21'
@@ -176,6 +178,11 @@ class SettingsDialog(QDialog):
         self.enabled = QCheckBox('Allow song requests in chat')
         self.enabled.setChecked(settings.requests_enabled)
         outer.addWidget(self.enabled)
+        self.native_queue_enabled = QCheckBox('Experimental: add requests to Apple Music Playing Next automatically')
+        self.native_queue_enabled.setChecked(settings.native_queue_enabled)
+        outer.addWidget(self.native_queue_enabled)
+        caution = label('This uses Windows accessibility, not an Apple API. Spindle only confirms requests it can see in Playing Next. It may change the Apple Music window in the background and can fail on some app versions.', 'muted', True)
+        outer.addWidget(caution)
         links = label('Register at dev.twitch.tv/console/apps. Use a Public client; Device Code authorization runs in your browser.', 'muted', True)
         outer.addWidget(links)
         actions = QHBoxLayout()
@@ -192,6 +199,7 @@ class SettingsDialog(QDialog):
         self.settings.cooldown_seconds = self.cooldown.value()
         self.settings.max_duration_minutes = self.duration.value()
         self.settings.requests_enabled = self.enabled.isChecked()
+        self.settings.native_queue_enabled = self.native_queue_enabled.isChecked()
         self.settings.save()
         super().accept()
 
@@ -205,7 +213,11 @@ class SpindleWindow(QMainWindow):
         self.bus = Bus()
         self.settings = Settings.load()
         self.store = QueueStore(data_dir() / 'requests.db')
-        self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit)
+        self.native_queue = NativeQueueBridge()
+        self.syncing_ids: set[int] = set()
+        self.sync_lock = threading.Lock()
+        self.engine = CommandEngine(self.store, Catalog(), self.settings, self.bus.queue_changed.emit,
+                                    native_queue=self.native_queue, on_status=self.bus.status.emit)
         self.monitor = AppleMusicMonitor(self.on_media, self.bus.status.emit)
         self.twitch: TwitchClient | None = None
         self.activity = []
@@ -271,7 +283,7 @@ class SpindleWindow(QMainWindow):
         queue_title = QHBoxLayout(); queue_title.addWidget(label('Viewer requests', 'section')); queue_title.addStretch(1)
         self.count = label('0 pending', 'muted'); queue_title.addWidget(self.count)
         left_col.addLayout(queue_title)
-        self.disclaimer = label('Requests live in Spindle. They are not automatically added to Apple Music Up Next.', 'muted', True)
+        self.disclaimer = label('Only requests confirmed in Apple Music are marked Added to Up Next. Enable experimental queue sync in Settings.', 'muted', True)
         self.disclaimer.setStyleSheet('font-size: 12px; color: #b9a997;')
         left_col.addWidget(self.disclaimer)
         self.queue_scroll = QScrollArea(); self.queue_scroll.setWidgetResizable(True)
@@ -281,7 +293,8 @@ class SpindleWindow(QMainWindow):
         left_col.addWidget(self.queue_scroll, 1)
         content.addWidget(left, 5)
 
-        # Scroll the entire sidebar; a short viewport must not clip card text.
+        # The side cards have more content than a short window can display.
+        # Scroll the whole sidebar instead of allowing Qt to clip card contents.
         right_container = QWidget()
         right_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         right = QVBoxLayout(right_container); right.setSpacing(16)
@@ -331,7 +344,7 @@ class SpindleWindow(QMainWindow):
         page.addLayout(content, 1)
 
         footer = QHBoxLayout()
-        self.footer = label('Your music stays in Apple Music. Your requests stay local.', 'muted'); footer.addWidget(self.footer)
+        self.footer = label('Your music stays in Apple Music. Verified requests appear in Up Next.', 'muted'); footer.addWidget(self.footer)
         footer.addStretch(1)
         footer.addWidget(label('SPINDLE  /  EARLY PREVIEW', 'eyebrow'))
         page.addLayout(footer)
@@ -379,8 +392,9 @@ class SpindleWindow(QMainWindow):
         while self.queue_list.count():
             item = self.queue_list.takeAt(0)
             if item.widget(): item.widget().deleteLater()
-        pending = self.store.pending()
-        self.count.setText(f'{len(pending)} pending')
+        pending = self.store.active()
+        verified = sum(p.status == 'queued' for p in pending)
+        self.count.setText(f'{len(pending)} requests · {verified} in Apple Music')
         if not pending:
             empty = QWidget(); col=QVBoxLayout(empty); col.setAlignment(Qt.AlignmentFlag.AlignCenter)
             disc = label('◎'); disc.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -400,15 +414,21 @@ class SpindleWindow(QMainWindow):
                 row.addWidget(num)
                 details=QVBoxLayout(); details.setSpacing(3)
                 details.addWidget(label(request.title, 'itemTitle'))
-                details.addWidget(label(f'{request.artist}  ·  @{request.viewer_name}', 'muted'))
+                details.addWidget(label(f'{request.artist}  ·  @{request.viewer_name}  ·  ' +
+                                        ('Added to Up Next' if request.status == 'queued' else 'Pending'), 'muted'))
                 row.addLayout(details,1)
+                if request.status == 'pending':
+                    sync = button('Queue', 'ghost')
+                    sync.setToolTip('Attempt to add this song to the official Apple Music Up Next queue and verify it.')
+                    sync.clicked.connect(lambda _, rid=request.id: self.send_to_apple_music(rid))
+                    row.addWidget(sync)
                 play = button('Open', 'ghost'); play.setToolTip('Open song link. Does not alter Apple Music Up Next.')
                 play.clicked.connect(lambda _, url=request.url: self.open_url(url))
                 row.addWidget(play)
                 done = button('✓', 'ghost'); done.setToolTip('Mark this request played manually')
                 done.clicked.connect(lambda _, rid=request.id: self.resolve(rid,'played'))
                 row.addWidget(done)
-                remove = button('×', 'ghost'); remove.setToolTip('Remove this pending request')
+                remove = button('×', 'ghost'); remove.setToolTip('Only removes the Spindle record, not a song already added to Apple Music')
                 remove.clicked.connect(lambda _, rid=request.id: self.resolve(rid,'removed'))
                 row.addWidget(remove)
                 self.queue_list.addWidget(card)
@@ -418,6 +438,34 @@ class SpindleWindow(QMainWindow):
         if self.store.change(request_id, action):
             self.log(f'Request #{request_id} marked {action}.')
             self.refresh_queue()
+
+    def send_to_apple_music(self, request_id: int):
+        # Explicit retry is useful for requests made before native queue sync
+        # was enabled, as well as occasional transient UIA failures.
+        with self.sync_lock:
+            if request_id in self.syncing_ids:
+                return
+            self.syncing_ids.add(request_id)
+        self.log(f'Checking Apple Music Up Next for request #{request_id}…')
+
+        def work():
+            try:
+                target = next((p for p in self.store.pending() if p.id == request_id), None)
+                if not target:
+                    self.bus.status.emit(f'Request #{request_id} is no longer pending.')
+                    return
+                track = Track(target.title, target.artist, target.album,
+                              target.duration_ms, target.track_id, target.url)
+                result = self.native_queue.enqueue(track, first_request=not bool(self.store.queued()))
+                if result.verified and self.store.mark_queued(request_id):
+                    self.bus.status.emit(f'Apple Music Up Next verified for {track.title} — {track.artist}')
+                    self.bus.queue_changed.emit()
+                else:
+                    self.bus.status.emit(f'Could not verify request #{request_id} in Apple Music: {result.reason}')
+            finally:
+                with self.sync_lock:
+                    self.syncing_ids.discard(request_id)
+        threading.Thread(target=work, daemon=True, name=f'QueueRequest-{request_id}').start()
 
     def open_url(self, url):
         if url.startswith('https://music.apple.com/') or url.startswith('https://itunes.apple.com/'):

@@ -3,6 +3,8 @@ import asyncio
 import sys
 import types
 
+# The full keyring is installed in the Windows CI job. Avoid requiring a host
+# OS credential backend just to test command routing on Linux.
 try:
     import keyring
 except ImportError:
@@ -47,7 +49,7 @@ def test_broadcaster_and_viewer_commands_are_processed(tmp_path):
 
     asyncio.run(run())
     assert any('Sufjan Stevens' in r for r in responses)
-    assert any('Request #1 pending' in r for r in responses)
+    assert any('Request saved in Spindle' in r for r in responses)
     assert any('Beyoncé' in r for r in responses)
     assert len(queue.pending()) == 1
     queue.close()

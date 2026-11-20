@@ -1,24 +1,39 @@
 """Pure Twitch command logic. All responses distinguish request queue from Apple Music."""
 import re
 from threading import RLock
-from .catalog import Catalog, CatalogError
+from .catalog import Catalog, CatalogError, norm
 from .models import Track
 from .queue_store import QueueStore, QueueError
 from .settings import Settings
+from .native_queue import NativeQueueBridge, strict_track_match
 
 
 class CommandEngine:
-    def __init__(self, store: QueueStore, catalog: Catalog, settings: Settings, on_change=None):
+    def __init__(self, store: QueueStore, catalog: Catalog, settings: Settings, on_change=None,
+                 native_queue: NativeQueueBridge | None = None, on_status=None):
         self.store = store
         self.catalog = catalog
         self.settings = settings
         self.on_change = on_change or (lambda: None)
         self._current: Track | None = None
         self._lock = RLock()
+        self.native_queue = native_queue
+        self.on_status = on_status or (lambda message: None)
+        self._previous_playing_key = None
 
     def set_current(self, current: Track | None):
+        # Clear successfully queued songs only on a *new* playing-track transition.
         with self._lock:
+            previous = self._previous_playing_key
+            key = (norm(current.title), norm(current.artist)) if current and current.playing else None
             self._current = current
+            self._previous_playing_key = key
+        if previous and key and previous != key:
+            for requested in self.store.queued():
+                if strict_track_match(requested.title, requested.artist, current):
+                    if self.store.change(requested.id, 'played'):
+                        self.on_change()
+                    break
 
     def get_current(self) -> Track | None:
         with self._lock:
@@ -38,14 +53,15 @@ class CommandEngine:
                 return 'Apple Music is not connected or no track is available right now.'
             if not current.playing:
                 return f'Apple Music is paused. Last track: {current.formatted}.'
-            return f'♫ Now playing on Apple Music: {current.formatted}'
+            return f'♫ Now playing: {current.title} — {current.artist}'
 
         if command == '!queue':
-            pending = self.store.pending()
-            if not pending:
-                return 'There are no viewer requests pending.'
-            excerpt = ' | '.join(f'{i+1}. {p.artist} — {p.title}' for i,p in enumerate(pending[:3]))
-            return f'Pending requests ({len(pending)}): {excerpt}' + (' | more in Spindle' if len(pending) > 3 else '')
+            active = self.store.active()
+            if not active:
+                return 'No song requests in Spindle right now.'
+            excerpt = ' | '.join(f'{i+1}. {p.title} — {p.artist}' for i,p in enumerate(active[:3]))
+            verified = sum(p.status == 'queued' for p in active)
+            return f'♫ Requests: {len(active)} total, {verified} verified in Apple Music. {excerpt}' + (' | more in Spindle' if len(active) > 3 else '')
 
         if command in ('!sr', '!request'):
             if arg.casefold() in ('on', 'off') and is_moderator:
@@ -61,11 +77,20 @@ class CommandEngine:
                 track = self.catalog.best(arg)
                 if track.duration_ms > self.settings.max_duration_minutes * 60_000 and track.duration_ms > 0:
                     return f'{track.title} is longer than the {self.settings.max_duration_minutes}-minute request limit.'
-                _, position = self.store.add(track, user_id, user_name,
+                request_id, position = self.store.add(track, user_id, user_name,
                     max_queue=self.settings.max_queue, max_per_viewer=self.settings.max_per_viewer,
                     cooldown_seconds=self.settings.cooldown_seconds)
                 self.on_change()
-                return f'♫ Request #{position} pending: {track.formatted}. This is in the Spindle request queue, not Apple Music Up Next yet.'
+                if self.settings.native_queue_enabled and self.native_queue is not None:
+                    delivery = self.native_queue.enqueue(track, first_request=(position == 1))
+                    if delivery.verified:
+                        self.store.mark_queued(request_id)
+                        self.on_change()
+                        self.on_status(f'Apple Music Up Next confirmed: {track.title} — {track.artist}')
+                        return f'♫ Added to Apple Music Up Next: {track.title} — {track.artist} (requested by @{user_name})'
+                    self.on_status(f'Native queue could not be verified: {delivery.reason}')
+                    return f'♫ Request saved in Spindle: {track.title} — {track.artist}. Could not verify Apple Music Up Next.'
+                return f'♫ Request saved in Spindle: {track.title} — {track.artist}. Not yet in Apple Music Up Next.'
             except (CatalogError, QueueError) as exc:
                 return str(exc)
 

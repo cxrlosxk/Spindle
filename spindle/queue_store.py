@@ -36,12 +36,28 @@ class QueueStore:
             rows = self.conn.execute("SELECT * FROM song_requests WHERE status='pending' ORDER BY id ASC").fetchall()
             return [Request(**dict(row)) for row in rows]
 
+    def queued(self) -> list[Request]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM song_requests WHERE status='queued' ORDER BY id ASC").fetchall()
+            return [Request(**dict(row)) for row in rows]
+
+    def active(self) -> list[Request]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM song_requests WHERE status IN ('pending','queued') ORDER BY id ASC").fetchall()
+            return [Request(**dict(row)) for row in rows]
+
+    def mark_queued(self, request_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute("UPDATE song_requests SET status='queued' WHERE id=? AND status='pending'", (request_id,))
+            self.conn.commit()
+            return cur.rowcount > 0
+
     def add(self, track: Track, viewer_id: str, viewer_name: str,
             max_queue=30, max_per_viewer=2, cooldown_seconds=90) -> tuple[int, int]:
         if not track.track_id or not track.title or not track.artist:
             raise QueueError('Song metadata is incomplete. Please try an Apple Music song link.')
         with self.lock:
-            pending = self.pending()
+            pending = self.active()
             if len(pending) >= max_queue:
                 raise QueueError('The request queue is full right now.')
             if any(p.track_id == track.track_id for p in pending):
@@ -69,7 +85,7 @@ class QueueStore:
         if status not in ('played', 'removed'):
             raise ValueError('invalid request status')
         with self.lock:
-            cursor = self.conn.execute("UPDATE song_requests SET status=? WHERE id=? AND status='pending'",
+            cursor = self.conn.execute("UPDATE song_requests SET status=? WHERE id=? AND status IN ('pending','queued')",
                                        (status, request_id))
             self.conn.commit()
             return cursor.rowcount > 0
