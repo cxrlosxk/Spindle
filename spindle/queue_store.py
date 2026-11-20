@@ -53,18 +53,25 @@ class QueueStore:
             return cur.rowcount > 0
 
     def add(self, track: Track, viewer_id: str, viewer_name: str,
-            max_queue=30, max_per_viewer=2, cooldown_seconds=90) -> tuple[int, int]:
+            max_queue=30, max_per_viewer=2, cooldown_seconds=90,
+            *, is_broadcaster: bool = False) -> tuple[int, int]:
         if not track.track_id or not track.title or not track.artist:
             raise QueueError('Song metadata is incomplete. Please try an Apple Music song link.')
         with self.lock:
             pending = self.active()
-            if len(pending) >= max_queue:
+            # Stream owners are exempt from all *numeric* request limits.
+            # Regular viewers and moderators retain the configured safeguards.
+            # Keep duplicate-track protection so uncertain Apple Music retries
+            # never accidentally queue the same track twice.
+            if not is_broadcaster and len(pending) >= max_queue:
                 raise QueueError('The request queue is full right now.')
             if any(p.track_id == track.track_id for p in pending):
                 raise QueueError('That song is already in the request queue.')
-            if sum(p.viewer_id == viewer_id for p in pending) >= max_per_viewer:
+            if not is_broadcaster and sum(
+                p.viewer_id == viewer_id for p in pending
+            ) >= max_per_viewer:
                 raise QueueError(f'You already have {max_per_viewer} pending requests.')
-            if cooldown_seconds:
+            if cooldown_seconds and not is_broadcaster:
                 last = self.conn.execute(
                     'SELECT created_at FROM song_requests WHERE viewer_id=? ORDER BY id DESC LIMIT 1',
                     (viewer_id,)
