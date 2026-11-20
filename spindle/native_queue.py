@@ -509,36 +509,115 @@ class WindowsQueueUIA:
                 matches.append(row)
         return matches
 
+    def _post_music_return(self):
+        """Best-effort Enter delivered only to Apple Music's own window.
+
+        WinUI may render its AutoSuggestBox without a QueryButton. Posting to
+        the Music input-site HWND does not send keystrokes to Twitch/the user's
+        foreground game. Results are *never* trusted until the results view
+        actually changes. Windows or WinUI may ignore synthetic messages.
+        """
+        hwnd = getattr(self, '_hwnd', None)
+        if hwnd is None or not self.user32.IsWindow(hwnd):
+            return False
+        ct = self.ctypes
+        wt = self.wintypes
+        cbtype = ct.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+        candidates = []
+        def visitor(child, unused):
+            klass = ct.create_unicode_buffer(128)
+            self.user32.GetClassNameW(child, klass, 128)
+            if klass.value == 'InputSiteWindowClass':
+                candidates.append(child)
+            return True
+        callback = cbtype(visitor)
+        self.user32.EnumChildWindows(hwnd, callback, 0)
+        target = candidates[0] if candidates else hwnd
+        # WM_KEYDOWN/UP, VK_RETURN. This is *not* global SendInput and should
+        # not interfere with the keyboard of the foreground game.
+        down = self.user32.PostMessageW(target, 0x0100, 0x0D, 0x001C0001)
+        up = self.user32.PostMessageW(target, 0x0101, 0x0D, 0xC01C0001)
+        return bool(down and up)
+
+    def _submit_search(self, window):
+        """Submit a real catalog search instead of showing 4 suggestions."""
+        # In Apple Music, QueryButton is the official AutoSuggestBox query
+        # action. It may be offscreen/zero-bounds until text is entered.
+        found = self._all(window, aid='QueryButton')
+        if len(found) == 1:
+            try:
+                self._invoke(found[0])
+                return 'query-button'
+            except Exception:
+                pass
+        # A separate WinUI search control can sometimes expose Invoke.
+        # Treat this as provisional, just like a posted Return.
+        for candidate in self._all(window, kind=self.types.GroupControl):
+            try:
+                if candidate.CurrentClassName == 'AutoSuggestBox':
+                    self._invoke(candidate)
+                    break
+            except Exception:
+                continue
+        if self._post_music_return():
+            return 'targeted-enter'
+        raise NativeQueueError(
+            'Could not submit the Apple Music search. The search text is '
+            'filled, but no full-results query action is available.'
+        )
+
+    def _search_page_state(self, window):
+        """A stale page MUST NOT count as results for a new query."""
+        content = self._find(
+            window, name='Content', kind=self.types.GroupControl,
+        )
+        songs = self._find(
+            content, name='Songs', kind=self.types.ListItemControl,
+        )
+        try:
+            runtime = tuple(songs.GetRuntimeId()) if songs is not None else None
+        except Exception:
+            runtime = None
+        try:
+            status = self._find(window, aid='SearchPageStatus')
+            status_name = (status.CurrentName or '') if status else ''
+        except Exception:
+            status_name = ''
+        try:
+            texts = tuple(
+                tuple(self._row_texts(row)[:3])
+                for row in (self._rows(songs) if songs else [])
+                if self._usable_result(row)
+            )
+        except Exception:
+            texts = ()
+        return runtime, status_name, texts
+
     def _search_results(self, window, track: Track):
         search = self._visible_search_field(window)
         if search is None:
             search = self._open_compact_search(window)
-        stale_content = self._find(window, name='Content', kind=self.types.GroupControl)
-        stale_section = self._find(stale_content, name='Songs',
-                                   kind=self.types.ListItemControl)
-        try:
-            old_id = stale_section.GetRuntimeId() if stale_section else None
-        except Exception:
-            old_id = None
-        # Avoid keystrokes that would interrupt a game on another monitor.
-        self._set_search_text(search, f'{track.title} {track.artist}')
-        submit = self._visible_action_button(window, 'QueryButton')
-        if submit is None:
-            submit = self._wait(
-                lambda: self._visible_action_button(window, 'QueryButton'),
-                1.5, 0.12,
-            )
-        if submit is not None:
-            self._invoke(submit)
-        # Some Apple Music builds submit AutoSuggestBox input automatically.
-        # In either case, confirm the results have had a chance to change.
-        started = time.monotonic()
+        query = f'{track.title} {track.artist}'
+        previous = self._search_page_state(window)
+        self._set_search_text(search, query)
+        submission = self._submit_search(window)
+        start = time.monotonic()
+        scrolled = False
 
-        requested_scroll = False
-
-        def find_rows():
-            nonlocal requested_scroll
+        def find_new_page():
+            nonlocal scrolled
             try:
+                old_runtime, old_status, old_texts = previous
+                new_runtime, new_status, new_texts = self._search_page_state(window)
+                state_changed = (
+                    new_runtime is not None and new_runtime != old_runtime
+                    or bool(new_texts and new_texts != old_texts)
+                    or bool(new_status and new_status != old_status
+                            and norm(track.title) in norm(new_status)
+                            and norm(track.artist) in norm(new_status))
+                )
+                if not state_changed:
+                    return None
                 content = self._find(
                     window, name='Content', kind=self.types.GroupControl,
                 )
@@ -547,32 +626,27 @@ class WindowsQueueUIA:
                 )
                 if songs is None:
                     return None
-                if old_id is not None:
-                    try:
-                        if songs.GetRuntimeId() == old_id and time.monotonic() - started < 1.6:
-                            return None
-                    except Exception:
-                        pass
-                if not requested_scroll:
-                    requested_scroll = True
+                if not scrolled:
+                    scrolled = True
                     if self._scroll_song_section(songs):
-                        # Scrolling can invalidate WinUI result elements. Read
-                        # them on the next poll instead of using a stale pointer.
                         return None
-                rows = [r for r in self._rows(songs) if self._usable_result(r)]
-                return rows if rows else None
+                rows = [
+                    row for row in self._rows(songs)
+                    if self._usable_result(row)
+                ]
+                return rows or None
             except Exception:
-                # WinUI replaces the accessibility tree while navigating.
-                # Re-find the section on the next bounded polling iteration.
+                # UIA references commonly go stale as WinUI replaces its page.
                 return None
 
-        rows = self._wait(find_rows, 9.0, 0.2)
-        if rows is None:
-            raise NativeQueueError(
-                'Apple Music search returned no accessible song results. '
-                'Try opening Search manually and retry.'
-            )
-        return rows
+        rows = self._wait(find_new_page, 10.0, 0.2)
+        if rows:
+            return rows
+        raise NativeQueueError(
+            'Apple Music did not show a newly submitted full search-results '
+            'page after ' + submission + '. Spindle will not use old results '
+            'or the four-item suggestion dropdown.'
+        )
 
     def _target_row(self, window, track):
         # Only real, visible WinUI rows can be acted on. Apple Music frequently
