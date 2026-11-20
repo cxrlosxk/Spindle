@@ -82,7 +82,7 @@ class CommandEngine:
                     cooldown_seconds=self.settings.cooldown_seconds)
                 self.on_change()
                 if self.settings.native_queue_enabled and self.native_queue is not None:
-                    delivery = self.native_queue.enqueue(track, first_request=(position == 1))
+                    delivery = self.native_queue.enqueue(track, first_request=not bool(self.store.queued()))
                     if delivery.verified:
                         self.store.mark_queued(request_id)
                         self.on_change()
