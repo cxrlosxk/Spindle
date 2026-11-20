@@ -1296,6 +1296,7 @@ class NativeQueueBridge:
     def __init__(self, backend_factory=None, timeout=65.0):
         self.backend_factory = backend_factory
         self.allow_focus_handoff = False
+        self.protect_foreground = False
         self.timeout = timeout
         self.tasks = queue.Queue()
         self.worker = None
@@ -1329,10 +1330,18 @@ class NativeQueueBridge:
                     if is_probe:
                         result = backend.inspect_diagnostics()
                     elif first_request == '__verify_only__':
+                        if self.backend_factory is None:
+                            backend.protect_foreground = self.protect_foreground
+                            backend.allow_focus_handoff = (
+                                self.allow_focus_handoff and not self.protect_foreground
+                            )
                         result = backend.verify_present(track)
                     else:
                         if self.backend_factory is None:
-                            backend.allow_focus_handoff = self.allow_focus_handoff
+                            backend.protect_foreground = self.protect_foreground
+                            backend.allow_focus_handoff = (
+                                self.allow_focus_handoff and not self.protect_foreground
+                            )
                         result = backend.deliver(track, first_request=first_request)
                     if not future.cancelled():
                         future.set_result(result)
@@ -1401,4 +1410,9 @@ class NativeQueueBridge:
             return future.result(timeout=self.timeout)
         except FutureTimeout:
             future.cancel()
-            return Delivery(False, 'Native queue verification timed out. It may have been added; check Playing Next before retrying.')
+            return Delivery(
+                False,
+                'Native queue verification timed out. The command may have reached '
+                'Apple Music; Spindle will only verify, never blindly add it again.',
+                uncertain=True,
+            )
