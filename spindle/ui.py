@@ -359,7 +359,7 @@ class SpindleWindow(QMainWindow):
         footer = QHBoxLayout()
         self.footer = label('Your music stays in Apple Music. Verified requests appear in Up Next.', 'muted'); footer.addWidget(self.footer)
         footer.addStretch(1)
-        footer.addWidget(label('SPINDLE  /  EARLY PREVIEW', 'eyebrow'))
+        footer.addWidget(label('SPINDLE  /  v0.4.0 DIAGNOSTICS', 'eyebrow'))
         page.addLayout(footer)
 
     def start_monitor(self):
