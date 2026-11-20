@@ -137,21 +137,34 @@ class WindowsQueueUIA:
             ) from exc
 
     def _invoke(self, element):
+        """Activate an explicitly identified UIA action, never an arbitrary click.
+
+        WinUI buttons can expose LegacyIAccessible instead of InvokePattern.
+        This fallback does not change keyboard focus or move the mouse.
+        """
         if element is None:
             raise NativeQueueError('Apple Music action control was not found.')
         control = self._control(element)
+        failures = []
         try:
             pattern = control.GetInvokePattern()
+            if pattern is not None:
+                pattern.Invoke(waitTime=0)
+                return
         except Exception as exc:
-            raise NativeQueueError(
-                f'Cannot read Apple Music action accessibility pattern: {type(exc).__name__}.'
-            ) from exc
-        if not pattern:
-            raise NativeQueueError('Apple Music action control has no accessibility Invoke pattern.')
+            failures.append('Invoke:' + type(exc).__name__)
         try:
-            pattern.Invoke(waitTime=0)
+            legacy = control.GetLegacyIAccessiblePattern()
+            if legacy is not None:
+                legacy.DoDefaultAction(waitTime=0)
+                return
         except Exception as exc:
-            raise NativeQueueError(f'Apple Music action failed: {type(exc).__name__}.') from exc
+            failures.append('Legacy:' + type(exc).__name__)
+        raise NativeQueueError(
+            'Apple Music action has no usable Invoke or Legacy default pattern'
+            + (' (' + ', '.join(failures) + ')' if failures else '')
+            + '. Inspect Apple Music to see its available patterns.'
+        )
 
     @staticmethod
     def _wait(fn, seconds=3.0, every=0.12):
