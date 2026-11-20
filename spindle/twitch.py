@@ -38,6 +38,9 @@ class TwitchClient:
         self._token_lock = RLock()
         self._seen = deque(maxlen=600)
         self._seen_set = set()
+        # Do not reject broadcaster commands; filter Spindle's own replies by ID.
+        self._sent_ids = deque(maxlen=600)
+        self._sent_id_set = set()
 
     def _save_token(self):
         keyring.set_password(KEYRING_SERVICE, self.client_id, json.dumps(self.token))
@@ -147,8 +150,14 @@ class TwitchClient:
             'sender_id': self.user_id,
             'message': message[:480],
         })
-        if result.get('data') and not result['data'][0].get('is_sent', True):
-            self.on_status('Twitch declined to send a reply (possibly chat restrictions).')
+        receipts = result.get('data') or []
+        if not receipts:
+            raise TwitchError('Twitch did not confirm that the chat reply was sent.')
+        receipt = receipts[0]
+        if not receipt.get('is_sent', False):
+            reason = receipt.get('drop_reason') or {}
+            raise TwitchError('Twitch rejected the chat reply: ' + str(reason.get('message') or 'chat restrictions'))
+        self._remember_sent(receipt.get('message_id'))
 
     def _first_seen(self, message_id):
         if not message_id or message_id in self._seen_set:
@@ -158,6 +167,46 @@ class TwitchClient:
         self._seen.append(message_id)
         self._seen_set.add(message_id)
         return True
+
+    def _remember_sent(self, message_id):
+        if not message_id or message_id in self._sent_id_set:
+            return
+        if len(self._sent_ids) == self._sent_ids.maxlen:
+            self._sent_id_set.discard(self._sent_ids.popleft())
+        self._sent_ids.append(message_id)
+        self._sent_id_set.add(message_id)
+
+    async def _process_chat_event(self, event):
+        """Handle broadcaster and viewer commands without echoing bot replies."""
+        message = (event.get('message') or {}).get('text', '').strip()
+        command = message.split(maxsplit=1)[0].casefold() if message else ''
+        if command not in {'!song', '!np', '!sr', '!request', '!queue', '!unrequest', '!remove'}:
+            return
+        if event.get('message_id') in self._sent_id_set:
+            return
+        sender_id = str(event.get('chatter_user_id') or '')
+        if not sender_id:
+            self.on_status('Received a chat command without a sender ID; ignored.')
+            return
+        sender_name = event.get('chatter_user_name') or 'viewer'
+        badges = {badge.get('set_id') for badge in event.get('badges', [])}
+        is_moderator = sender_id == self.user_id or bool({'moderator', 'broadcaster'} & badges)
+        self.on_message(f'Received from @{sender_name}: {message}')
+        try:
+            response = await asyncio.to_thread(
+                self.engine.handle, sender_id, sender_name, message, is_moderator,
+            )
+        except Exception as exc:
+            self.on_status(f'Could not process {command}: {str(exc)[:160]}')
+            return
+        if not response:
+            return
+        try:
+            await self._send(response)
+        except Exception as exc:
+            self.on_status(f'Command processed, but Twitch reply failed: {str(exc)[:160]}')
+        else:
+            self.on_message(f'Replied to @{sender_name}: {response}')
 
     async def _listen(self):
         connection_url = 'wss://eventsub.wss.twitch.tv/ws'
@@ -188,22 +237,7 @@ class TwitchClient:
                             if not self._first_seen(metadata.get('message_id')):
                                 continue
                             event = payload.get('payload', {}).get('event', {})
-                            if event.get('chatter_user_id') == self.user_id:
-                                continue
-                            message = event.get('message', {}).get('text', '')
-                            if not message.startswith('!'):
-                                continue
-                            badges = {badge.get('set_id') for badge in event.get('badges', [])}
-                            moderator = bool({'moderator', 'broadcaster'} & badges)
-                            response = await asyncio.to_thread(
-                                self.engine.handle,
-                                event.get('chatter_user_id', ''),
-                                event.get('chatter_user_name', 'viewer'),
-                                message, moderator,
-                            )
-                            if response:
-                                self.on_message(f'{event.get("chatter_user_name", "viewer")}: {message} → {response}')
-                                await self._send(response)
+                            await self._process_chat_event(event)
                         elif msg_type == 'session_reconnect':
                             new_url = payload.get('payload', {}).get('session', {}).get('reconnect_url')
                             if new_url and new_url.startswith('wss://eventsub.wss.twitch.tv/'):
