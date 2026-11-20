@@ -770,3 +770,73 @@ def test_temporarily_restored_music_is_reminimized_without_activation():
     adapter._finish_window()
     assert calls == [(9001, 7)]
     assert adapter._temporarily_restored_hwnd is None
+
+
+def test_album_qualified_full_search_finds_song_omitted_from_first_four():
+    """Automatic query refinement must find songs absent from top suggestions."""
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    first = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=20, right=250, bottom=60),
+    )
+    desired = SimpleNamespace(
+        CurrentIsOffscreen=False,
+        CurrentBoundingRectangle=SimpleNamespace(left=0, top=80, right=250, bottom=120),
+    )
+    calls = []
+    def search(window, track, query_override=None):
+        calls.append(query_override)
+        return [first] if not query_override else [desired]
+    adapter._search_results = search
+    adapter._row_texts = lambda row: (
+        ['Forever', 'Babyface', 'Greatest Hits'] if row is first
+        else ['Forever', 'Mariah Carey', 'Daydream']
+    )
+    adapter._wait = lambda callback, *args, **kwargs: []
+    adapter._open_all_songs = lambda window: False
+    track = Track('Forever', 'Mariah Carey', 'Daydream')
+    assert adapter._target_row(object(), track) is desired
+    assert calls == [None, 'Forever Mariah Carey Daydream']
+
+
+def test_minimized_apple_music_can_be_restored_without_activating_window():
+    import sys
+    if sys.platform != 'win32':
+        pytest.skip('Windows UI Automation uses ctypes.WINFUNCTYPE')
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+    from spindle.native_queue import WindowsQueueUIA
+    adapter = WindowsQueueUIA.__new__(WindowsQueueUIA)
+    adapter.ctypes = ctypes
+    adapter.wintypes = wintypes
+    state = {'minimized': True, 'show_commands': []}
+    class FakeUser32:
+        def EnumWindows(self, fn, unused):
+            fn(4321, 0)
+        def IsWindowVisible(self, hwnd):
+            return True
+        def GetWindowTextW(self, hwnd, out, capacity):
+            out.value = 'Apple Music'
+        def GetClassNameW(self, hwnd, out, capacity):
+            out.value = 'WinUIDesktopWin32WindowClass'
+        def IsIconic(self, hwnd):
+            return state['minimized']
+        def ShowWindowAsync(self, hwnd, code):
+            state['show_commands'].append(code)
+            state['minimized'] = code == 7
+            return True
+        def IsWindow(self, hwnd):
+            return True
+    adapter.user32 = FakeUser32()
+    window = object()
+    adapter.api = SimpleNamespace(ElementFromHandle=lambda hwnd: window)
+    adapter._wait = lambda cb, *args, **kwargs: cb()
+    assert adapter._find_window() is window
+    assert state['show_commands'] == [4]
+    assert not state['minimized']
+    adapter._finish_window()
+    assert state['show_commands'] == [4, 7]
+    assert state['minimized']
